@@ -20,6 +20,7 @@ from modules.dynamics import DynamicLoadAnalyzer, ProgressiveCollapseAnalyzer
 from modules.photogrammetry import PhotogrammetrySystem
 from modules.session import DesignSession
 from modules.geometry import WorldGeometry
+from modules.storage import SessionStorage
 
 app = FastAPI(
     title="Bauflex AI Brain",
@@ -42,12 +43,24 @@ collapse_analyzer = None
 active_sessions: Dict[str, DesignSession] = {}
 generator = ScaffoldGenerator()
 geometry = WorldGeometry(padding=3.0)
+session_storage = SessionStorage()
 
 def get_collapse_analyzer():
     global collapse_analyzer
     if collapse_analyzer is None:
         collapse_analyzer = ProgressiveCollapseAnalyzer(engineer)
     return collapse_analyzer
+
+
+def get_or_restore_session(session_id: str) -> DesignSession | None:
+    session = active_sessions.get(session_id)
+    if session is not None:
+        return session
+
+    restored = session_storage.load(session_id, vision_system=vision_system)
+    if restored is not None:
+        active_sessions[session_id] = restored
+    return restored
 
 
 # === МОДЕЛИ ДАННЫХ ===
@@ -119,13 +132,14 @@ async def start_session():
     """Создает новую сессию замера и включает сбор keyframes."""
     sid = str(uuid.uuid4())
     active_sessions[sid] = DesignSession(session_id=sid, vision_system=vision_system)
+    session_storage.save(active_sessions[sid])
     return {"session_id": sid, "status": "MEASURING"}
 
 
 @app.post("/session/stream/{session_id}")
 async def stream_session_data(session_id: str, data: Dict[str, Any] = Body(...)):
     """Принимает потоковые данные Android: image/pose/markers."""
-    session = active_sessions.get(session_id)
+    session = get_or_restore_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     if session.status != "MEASURING":
@@ -146,17 +160,19 @@ async def stream_session_data(session_id: str, data: Dict[str, Any] = Body(...))
         pose_matrix=data.get("pose", []),
         markers=data.get("markers", []),
     )
+    session_storage.save(session)
     return {"status": "RECEIVING", "ai_hints": feedback}
 
 
 @app.post("/session/model/{session_id}")
 async def session_model(session_id: str):
     """Финализирует сессию, выполняет геометрию+физику и возвращает AR-ready формат."""
-    session = active_sessions.get(session_id)
+    session = get_or_restore_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
     session.status = "MODELING"
+    session_storage.save(session)
 
     # 1) ROI фильтр для пользовательских/AI-точек
     all_points = list(session.user_anchors) + list(session.detected_supports)
@@ -283,6 +299,7 @@ async def session_model(session_id: str):
             )
         )
 
+    session_storage.save(session)
     return {
         "status": "SUCCESS",
         "roi": {"min": roi_min.tolist(), "max": roi_max.tolist()},
