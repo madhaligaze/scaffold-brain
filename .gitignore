@@ -191,4 +191,4 @@ credentials/
 *.pem
 *.key
 *.crt
-.venv
+.venv/
