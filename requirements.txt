@@ -16,7 +16,7 @@ scipy==1.12.0
 scikit-learn==1.4.0
 
 # Finite Element Analysis
-PyNite==0.0.89  # или Pynite, в зависимости от установленной версии
+pynitefea>=1.4.0,<2.1  # пакет FEA, импортируется как Pynite/PyNite
 
 # Optional: для ускорения
 # torch==2.1.2  # Если нужно GPU для YOLO
