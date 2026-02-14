@@ -1,6 +1,4 @@
 from enum import Enum
-import copy
-
 try:
     # Актуальная точка входа в pynitefea>=2.x
     from Pynite import FEModel3D
@@ -17,14 +15,16 @@ else:
     _PYNITE_IMPORT_ERROR = None
 
 
-
-
 class SupportType(str, Enum):
     FLOOR = "FLOOR"
     BEAM_CLAMP = "BEAM_CLAMP"
     SUSPENDED = "SUSPENDED"
 
+
 class StructuralBrain:
+    MATERIAL_NAME = "steel_s235"
+    SECTION_NAME = "tube_48x3"
+
     def __init__(self):
         pass
 
@@ -35,10 +35,19 @@ class StructuralBrain:
                 "or run 'pip install -r requirements.txt'."
             ) from _PYNITE_IMPORT_ERROR
 
+    def _setup_materials(self, model):
+        """Регистрирует материал и сечение для новых версий Pynite."""
+        if hasattr(model, "materials") and self.MATERIAL_NAME not in getattr(model, "materials", {}):
+            model.add_material(self.MATERIAL_NAME, E=2.1e11, G=8.1e10, nu=0.3, rho=7850, fy=235e6)
+
+        if hasattr(model, "sections") and self.SECTION_NAME not in getattr(model, "sections", {}):
+            model.add_section(self.SECTION_NAME, A=4.5e-4, Iy=1.1e-7, Iz=1.1e-7, J=2.2e-7)
+
     def create_model(self, nodes, beams, fixed_node_ids=None):
         """Создает базовую модель PyNite."""
         self._ensure_engine()
         model = FEModel3D()
+        self._setup_materials(model)
         fixed_nodes = set(fixed_node_ids or [])
 
         for n in nodes:
@@ -53,19 +62,52 @@ class StructuralBrain:
                 model.def_support(n['id'], True, True, True, True, True, True)
 
         for b in beams:
-            # Стандартная труба 48х3мм: J, Iy, Iz, A...
-            model.add_member(
-                b['id'],
-                b['start'],
-                b['end'],
-                E=2.1e11,
-                G=8.1e10,
-                Iy=1.1e-7,
-                Iz=1.1e-7,
-                J=2.2e-7,
-                A=4.5e-4,
-            )
+            # Совместимость с новым и старым API Pynite
+            try:
+                model.add_member(
+                    b['id'],
+                    b['start'],
+                    b['end'],
+                    self.MATERIAL_NAME,
+                    self.SECTION_NAME,
+                )
+            except TypeError:
+                model.add_member(
+                    b['id'],
+                    b['start'],
+                    b['end'],
+                    E=2.1e11,
+                    G=8.1e10,
+                    Iy=1.1e-7,
+                    Iz=1.1e-7,
+                    J=2.2e-7,
+                    A=4.5e-4,
+                )
         return model
+
+    def _get_member(self, model, member_id):
+        if hasattr(model, 'members') and member_id in model.members:
+            return model.members[member_id]
+        if hasattr(model, 'GetMember'):
+            return model.GetMember(member_id)
+        raise KeyError(f"Member '{member_id}' not found")
+
+    def _estimate_member_stress(self, member):
+        """Оценивает эквивалентное напряжение для версий без max_stress()."""
+        if hasattr(member, 'max_stress'):
+            return member.max_stress()
+
+        area = max(getattr(member.section, 'A', 4.5e-4), 1e-9)
+        iy = max(getattr(member.section, 'Iy', 1.1e-7), 1e-12)
+        iz = max(getattr(member.section, 'Iz', 1.1e-7), 1e-12)
+        # Полурадиус трубы 48 мм
+        c = 0.024
+
+        axial = abs(member.max_axial()) / area
+        my = abs(member.max_moment('My')) * c / iy
+        mz = abs(member.max_moment('Mz')) * c / iz
+
+        return axial + max(my, mz)
 
     def calculate_load_map(self, nodes, beams, fixed_node_ids=None):
         """Основной расчет. Возвращает раскраску (Зеленый/Красный)."""
@@ -85,9 +127,8 @@ class StructuralBrain:
 
         results = []
         for b in beams:
-            # Получаем напряжения
-            member = model.GetMember(b['id'])
-            stress = member.max_stress()
+            member = self._get_member(model, b['id'])
+            stress = self._estimate_member_stress(member)
             ratio = abs(stress / 235e6)  # Предел текучести стали
 
             color = "green"

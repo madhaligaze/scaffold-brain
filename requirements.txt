@@ -5,9 +5,9 @@ pydantic==2.6.0
 python-multipart==0.0.9
 
 # Computer Vision
-ultralytics==8.1.0  # YOLOv8
-opencv-python==4.9.0.80
-opencv-contrib-python==4.9.0.80
+# ultralytics==8.1.0  # Optional: YOLOv8 (может тянуть GUI-зависимости в headless среде)
+opencv-python-headless==4.9.0.80
+opencv-contrib-python-headless==4.9.0.80
 Pillow==10.2.0
 
 # Scientific Computing
@@ -16,7 +16,7 @@ scipy==1.12.0
 scikit-learn==1.4.0
 
 # Finite Element Analysis
-PyNite==0.0.89  # или Pynite, в зависимости от установленной версии
+pynitefea==1.6.1  # актуальный пакет для импорта `from Pynite import FEModel3D`
 
 # Optional: для ускорения
 # torch==2.1.2  # Если нужно GPU для YOLO
