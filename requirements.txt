@@ -26,3 +26,6 @@ pynitefea==1.6.1  # актуальный пакет для импорта `from 
 pytest==8.0.0
 black==24.1.0
 flake8==7.0.0
+
+# Geometry / Collision
+trimesh==4.4.9
