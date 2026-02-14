@@ -11,7 +11,7 @@ from .physics import StructuralBrain
 from .builder import ScaffoldGenerator, ScaffoldExpert, PathFinder
 from .dynamics import DynamicLoadAnalyzer, ProgressiveCollapseAnalyzer
 from .photogrammetry import PhotogrammetrySystem, MultiViewFusion
-from .geometry import WorldGeometry
+from .geometry import WorldGeometry, GeometryUtils, CollisionDetector
 
 __all__ = [
     # Vision
@@ -36,5 +36,7 @@ __all__ = [
     "MultiViewFusion",
     
     # Geometry
-    "WorldGeometry"
+    "WorldGeometry",
+    "GeometryUtils",
+    "CollisionDetector"
 ]

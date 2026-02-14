@@ -164,3 +164,51 @@ class WorldGeometry:
     def align_to_layher(self, length: float) -> float:
         """Округляет произвольную длину к ближайшему стандарту Layher."""
         return min(self.LAYHER_STANDARDS, key=lambda x: abs(x - length))
+
+
+# --- Backward-compatible adapters ---
+class GeometryUtils:
+    """Совместимость со старым API геометрических утилит."""
+
+    @staticmethod
+    def distance_3d(p1: Dict[str, float], p2: Dict[str, float]) -> float:
+        return WorldGeometry.get_distance(p1, p2)
+
+    @staticmethod
+    def calculate_bounding_box(nodes: List[Dict[str, float]]) -> Tuple[Dict[str, float], Dict[str, float]]:
+        if not nodes:
+            return ({"x": 0.0, "y": 0.0, "z": 0.0}, {"x": 0.0, "y": 0.0, "z": 0.0})
+        xs = [float(n.get("x", 0.0)) for n in nodes]
+        ys = [float(n.get("y", 0.0)) for n in nodes]
+        zs = [float(n.get("z", 0.0)) for n in nodes]
+        return (
+            {"x": min(xs), "y": min(ys), "z": min(zs)},
+            {"x": max(xs), "y": max(ys), "z": max(zs)},
+        )
+
+
+class CollisionDetector:
+    """Совместимость со старым API детекции препятствий."""
+
+    def __init__(self):
+        self._world = WorldGeometry()
+
+    def add_obstacle(self, obstacle: Dict[str, Any]):
+        obs_type = obstacle.get("type", "").lower()
+        if obs_type == "pipe":
+            start = obstacle.get("start", {"x": 0.0, "y": 0.0, "z": 0.0})
+            end = obstacle.get("end", {"x": 0.0, "y": 0.0, "z": 1.0})
+            radius = float(obstacle.get("radius", 0.1))
+            self._world.add_obstacle(
+                "pipe",
+                [float(start.get("x", 0.0)), float(start.get("y", 0.0)), float(start.get("z", 0.0))],
+                [float(end.get("x", 0.0)), float(end.get("y", 0.0)), float(end.get("z", 0.0))],
+                radius,
+            )
+
+    def check_beam_collision(self, beam_start: Dict[str, float], beam_end: Dict[str, float], clearance: float = 0.2) -> List[Dict[str, str]]:
+        _ = clearance
+        collisions = self._world.check_collisions(
+            [{"id": "legacy_beam", "start": beam_start, "end": beam_end}]
+        )
+        return collisions
