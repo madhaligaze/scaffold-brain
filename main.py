@@ -19,6 +19,7 @@ from modules.builder import ScaffoldExpert, ScaffoldGenerator
 from modules.dynamics import DynamicLoadAnalyzer, ProgressiveCollapseAnalyzer
 from modules.photogrammetry import PhotogrammetrySystem
 from modules.session import DesignSession
+from modules.geometry import WorldGeometry
 
 app = FastAPI(
     title="Bauflex AI Brain",
@@ -40,6 +41,7 @@ photogrammetry = PhotogrammetrySystem()
 collapse_analyzer = None
 active_sessions: Dict[str, DesignSession] = {}
 generator = ScaffoldGenerator()
+geometry = WorldGeometry(padding=3.0)
 
 def get_collapse_analyzer():
     global collapse_analyzer
@@ -78,6 +80,37 @@ class VibrationSource(BaseModel):
 
 class VibrationAnalysisRequest(StructureData):
     vibration_source: VibrationSource
+
+
+class Annotation(BaseModel):
+    """Подписи размеров на модели."""
+
+    text: str
+    position: Dict[str, float]
+
+
+class VisualElement(BaseModel):
+    """Описание одной детали для отрисовки в AR."""
+
+    id: str
+    type: str
+    mesh_type: str
+    start: Dict[str, float]
+    end: Dict[str, float]
+    stress_color: str
+    load_value: float
+
+
+class ProposalVariant(BaseModel):
+    """Один вариант предложения лесов."""
+
+    variant_id: int
+    name: str
+    description: str
+    elements: List[VisualElement]
+    annotations: List[Annotation]
+    total_weight: float
+    safety_rating: float
 
 # === SESSION PROTOCOL (Bauflex Session Protocol) ===
 
@@ -118,23 +151,143 @@ async def stream_session_data(session_id: str, data: Dict[str, Any] = Body(...))
 
 @app.post("/session/model/{session_id}")
 async def session_model(session_id: str):
-    """Финализирует сессию и генерирует 3 инженерных варианта."""
+    """Финализирует сессию, выполняет геометрию+физику и возвращает AR-ready формат."""
     session = active_sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
     session.status = "MODELING"
-    options = generator.generate_smart_options(
-        user_points=session.user_anchors,
-        ai_points=session.detected_supports,
+
+    # 1) ROI фильтр для пользовательских/AI-точек
+    all_points = list(session.user_anchors) + list(session.detected_supports)
+    roi_min, roi_max = geometry.create_roi_filter(all_points)
+    scoped_user = [
+        p for p in session.user_anchors
+        if roi_min[0] <= float(p.get("x", 0.0)) <= roi_max[0]
+        and roi_min[1] <= float(p.get("y", 0.0)) <= roi_max[1]
+        and roi_min[2] <= float(p.get("z", 0.0)) <= roi_max[2]
+    ]
+    scoped_ai = [
+        p for p in session.detected_supports
+        if roi_min[0] <= float(p.get("x", 0.0)) <= roi_max[0]
+        and roi_min[1] <= float(p.get("y", 0.0)) <= roi_max[1]
+        and roi_min[2] <= float(p.get("z", 0.0)) <= roi_max[2]
+    ]
+
+    # 2) Обновляем препятствия из AI (pipe-like объекты в supports)
+    geometry.obstacles.clear()
+    geometry.scene = geometry.scene.__class__()
+    for support in scoped_ai:
+        if str(support.get("type", "")).upper() not in {"PIPE", "AI_PIPE"}:
+            continue
+        start = support.get("start")
+        end = support.get("end")
+        radius = float(support.get("radius", 0.08))
+        if isinstance(start, dict) and isinstance(end, dict):
+            geometry.add_obstacle(
+                "pipe",
+                [float(start.get("x", 0.0)), float(start.get("y", 0.0)), float(start.get("z", 0.0))],
+                [float(end.get("x", 0.0)), float(end.get("y", 0.0)), float(end.get("z", 0.0))],
+                radius,
+            )
+
+    raw_options = generator.generate_smart_options(
+        user_points=scoped_user,
+        ai_points=scoped_ai,
         bounds=session.get_bounds(),
     )
 
-    for option in options:
-        physics_result = engineer.calculate_load_map(option["nodes"], option["beams"])
-        option["physics"] = physics_result
+    final_options: List[ProposalVariant] = []
 
-    return {"status": "SUCCESS", "proposals": options}
+    for idx, option in enumerate(raw_options, start=1):
+        node_map = {n["id"]: n for n in option.get("nodes", [])}
+
+        def beams_with_coords() -> List[Dict[str, Any]]:
+            resolved = []
+            for b in option.get("beams", []):
+                start_node = node_map.get(b.get("start"))
+                end_node = node_map.get(b.get("end"))
+                if not start_node or not end_node:
+                    continue
+                resolved.append({
+                    "id": b.get("id", f"beam_{len(resolved)}"),
+                    "type": b.get("type", "ledger"),
+                    "start": {"x": start_node["x"], "y": start_node["y"], "z": start_node["z"]},
+                    "end": {"x": end_node["x"], "y": end_node["y"], "z": end_node["z"]},
+                })
+            return resolved
+
+        # 3) Цикл самокритики: до 3 итераций коррекции коллизий
+        attempts = 0
+        elements = beams_with_coords()
+        collisions = geometry.check_collisions(elements)
+        while collisions and attempts < 3:
+            for c in collisions:
+                beam_id = c.get("beam_id")
+                beam = next((e for e in elements if e["id"] == beam_id), None)
+                if not beam:
+                    continue
+                # Простая автокоррекция: смещаем проблемную балку по Y на 0.15м
+                beam["start"]["y"] += 0.15
+                beam["end"]["y"] += 0.15
+            collisions = geometry.check_collisions(elements)
+            attempts += 1
+
+        physics_result = engineer.calculate_load_map(option.get("nodes", []), option.get("beams", []))
+        physics_rows = physics_result.get("data", [])
+        beam_colors = {item.get("id"): item for item in physics_rows}
+
+        visual_elements: List[VisualElement] = []
+        annotations: List[Annotation] = []
+
+        for el in elements:
+            beam_physics = beam_colors.get(el["id"], {})
+            load_ratio = float(beam_physics.get("utilization", beam_physics.get("load_ratio", 0.0)))
+            if load_ratio < 0.6:
+                color = "green"
+            elif load_ratio < 0.85:
+                color = "yellow"
+            else:
+                color = "red"
+
+            visual_elements.append(
+                VisualElement(
+                    id=el["id"],
+                    type=str(el.get("type", "ledger")),
+                    mesh_type="layher_allround_beam",
+                    start=el["start"],
+                    end=el["end"],
+                    stress_color=color,
+                    load_value=round(load_ratio * 100.0, 2),
+                )
+            )
+
+            length = geometry.get_distance(el["start"], el["end"])
+            layher_size = geometry.align_to_layher(length)
+            annotations.append(
+                Annotation(
+                    text=f"Ригель {layher_size}м",
+                    position=geometry.get_midpoint(el["start"], el["end"]),
+                )
+            )
+
+        final_options.append(
+            ProposalVariant(
+                variant_id=idx,
+                name=option.get("variant_name", f"Вариант {idx}"),
+                description=f"Стратегия: {option.get('strategy', 'DEFAULT')}. Коллизий после аудита: {len(collisions)}",
+                elements=visual_elements,
+                annotations=annotations,
+                total_weight=float(option.get("stats", {}).get("total_weight_kg", 0.0)),
+                safety_rating=float(max(0.0, 100.0 - max([float(r.get("load_ratio", 0.0)) for r in physics_rows], default=0.0) * 100.0)),
+            )
+        )
+
+    return {
+        "status": "SUCCESS",
+        "roi": {"min": roi_min.tolist(), "max": roi_max.tolist()},
+        "options": [o.model_dump() for o in final_options],
+    }
 
 
 # === БАЗОВЫЕ ЭНДПОИНТЫ (Computer Vision) ===
