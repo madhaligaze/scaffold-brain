@@ -175,6 +175,99 @@ class ScaffoldGenerator:
             }
         }
     
+
+    def generate_smart_options(self, user_points: List[Dict], ai_points: List[Dict], bounds: Dict) -> List[Dict]:
+        """Генерирует 3 стратегии на основе пользовательских и AI-опор."""
+        normalized_user = [self._normalize_anchor(p, default_type="USER_ANCHOR", default_weight=1.0) for p in user_points]
+        normalized_ai = [self._normalize_anchor(p, default_type=p.get("type", "AI_BEAM"), default_weight=self._default_weight(p.get("type"))) for p in ai_points]
+
+        width = float(bounds.get("w", 2.0))
+        height = float(bounds.get("h", 2.0))
+        depth = float(bounds.get("d", 1.0))
+
+        variants = []
+
+        manual_anchors = normalized_user or normalized_ai
+        manual = self._create_variant(width, height, depth, stand_len=2.0, ledger_len=1.5, label="По вашим отметкам")
+        manual["strategy"] = "MANUAL"
+        manual["anchors"] = manual_anchors
+        manual["support_summary"] = self._support_summary(manual_anchors)
+        variants.append(manual)
+
+        hybrid_anchors = self._add_floor_supports(normalized_user, normalized_ai)
+        hybrid = self._create_variant(width, height, depth, stand_len=2.5, ledger_len=2.0, label="Безопасный гибрид")
+        hybrid["strategy"] = "HYBRID"
+        hybrid["anchors"] = hybrid_anchors
+        hybrid["support_summary"] = self._support_summary(hybrid_anchors)
+        variants.append(hybrid)
+
+        efficiency = self._create_variant(width, height, depth, stand_len=3.0, ledger_len=2.13, label="Экономия (Склад)")
+        efficiency["strategy"] = "EFFICIENCY"
+        efficiency["anchors"] = hybrid_anchors
+        efficiency["support_summary"] = self._support_summary(hybrid_anchors)
+        variants.append(efficiency)
+
+        return variants
+
+    def _add_floor_supports(self, user_points: List[Dict], ai_points: List[Dict]) -> List[Dict]:
+        """Добавляет опоры пола под пользовательскими точками и учитывает найденный AI пол."""
+        final = list(user_points)
+        floor_points = [p for p in ai_points if p.get("type") in {"AI_FLOOR", "FLOOR"}]
+
+        for up in user_points:
+            if up.get("z", 0.0) <= 0.2:
+                continue
+            if not any(self._is_under(fp, up) for fp in floor_points):
+                floor_points.append({
+                    "x": up["x"],
+                    "y": up["y"],
+                    "z": 0.0,
+                    "type": "AI_FLOOR",
+                    "weight": 0.9,
+                    "source": "ai",
+                })
+
+        final.extend(floor_points)
+
+        seen = set()
+        deduped = []
+        for p in final:
+            key = (round(float(p.get("x", 0.0)), 2), round(float(p.get("y", 0.0)), 2), round(float(p.get("z", 0.0)), 2), p.get("type"))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(p)
+        return deduped
+
+    def _normalize_anchor(self, point: Dict, default_type: str, default_weight: float) -> Dict:
+        return {
+            "x": float(point.get("x", 0.0)),
+            "y": float(point.get("y", 0.0)),
+            "z": float(point.get("z", 0.0)),
+            "type": point.get("type", default_type),
+            "weight": float(point.get("weight", default_weight)),
+            "source": point.get("source", "user" if default_type.startswith("USER") else "ai"),
+        }
+
+    def _default_weight(self, support_type: str) -> float:
+        if support_type in {"AI_FLOOR", "FLOOR"}:
+            return 0.9
+        if support_type in {"AI_BEAM", "BEAM"}:
+            return 0.8
+        return 0.7
+
+    def _is_under(self, low: Dict, high: Dict) -> bool:
+        if float(low.get("z", 0.0)) > float(high.get("z", 0.0)):
+            return False
+        dist_xy = np.sqrt((float(low.get("x", 0.0)) - float(high.get("x", 0.0))) ** 2 + (float(low.get("y", 0.0)) - float(high.get("y", 0.0))) ** 2)
+        return dist_xy <= 0.75
+
+    def _support_summary(self, anchors: List[Dict]) -> Dict:
+        if not anchors:
+            return {"count": 0, "avg_weight": 0.0}
+        weights = [float(a.get("weight", 0.0)) for a in anchors]
+        return {"count": len(anchors), "avg_weight": round(float(np.mean(weights)), 3)}
+
     def _create_obstacle_grid(self, obstacles, grid_size_xy, grid_size_z):
         """Создает набор занятых ячеек сетки"""
         occupied = set()

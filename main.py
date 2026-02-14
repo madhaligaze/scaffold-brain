@@ -9,14 +9,16 @@ Bauflex AI Brain - Серверный "мозг" для Engineering Intelligence
 - Multi-view Photogrammetry
 - Expert System (Safety Rules)
 """
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Dict, List, Optional, Any
+import uuid
 from modules.vision import Eyes, SceneDiagnostician, VisionSystem
 from modules.physics import StructuralBrain
 from modules.builder import ScaffoldExpert, ScaffoldGenerator
 from modules.dynamics import DynamicLoadAnalyzer, ProgressiveCollapseAnalyzer
 from modules.photogrammetry import PhotogrammetrySystem
+from modules.session import DesignSession
 
 app = FastAPI(
     title="Bauflex AI Brain",
@@ -36,6 +38,8 @@ photogrammetry = PhotogrammetrySystem()
 
 # Ленивая инициализация для collapse analyzer (требует physics engine)
 collapse_analyzer = None
+active_sessions: Dict[str, DesignSession] = {}
+generator = ScaffoldGenerator()
 
 def get_collapse_analyzer():
     global collapse_analyzer
@@ -74,6 +78,64 @@ class VibrationSource(BaseModel):
 
 class VibrationAnalysisRequest(StructureData):
     vibration_source: VibrationSource
+
+# === SESSION PROTOCOL (Bauflex Session Protocol) ===
+
+@app.post("/session/start")
+async def start_session():
+    """Создает новую сессию замера и включает сбор keyframes."""
+    sid = str(uuid.uuid4())
+    active_sessions[sid] = DesignSession(session_id=sid, vision_system=vision_system)
+    return {"session_id": sid, "status": "MEASURING"}
+
+
+@app.post("/session/stream/{session_id}")
+async def stream_session_data(session_id: str, data: Dict[str, Any] = Body(...)):
+    """Принимает потоковые данные Android: image/pose/markers."""
+    session = active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status != "MEASURING":
+        raise HTTPException(status_code=409, detail="Session is not in measuring state")
+
+    try:
+        image_payload = data.get("image", b"")
+        if isinstance(image_payload, str):
+            import base64
+            image_bytes = base64.b64decode(image_payload)
+        else:
+            image_bytes = bytes(image_payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid image payload: {exc}")
+
+    feedback = session.update_world_model(
+        image_bytes=image_bytes,
+        pose_matrix=data.get("pose", []),
+        markers=data.get("markers", []),
+    )
+    return {"status": "RECEIVING", "ai_hints": feedback}
+
+
+@app.post("/session/model/{session_id}")
+async def session_model(session_id: str):
+    """Финализирует сессию и генерирует 3 инженерных варианта."""
+    session = active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session.status = "MODELING"
+    options = generator.generate_smart_options(
+        user_points=session.user_anchors,
+        ai_points=session.detected_supports,
+        bounds=session.get_bounds(),
+    )
+
+    for option in options:
+        physics_result = engineer.calculate_load_map(option["nodes"], option["beams"])
+        option["physics"] = physics_result
+
+    return {"status": "SUCCESS", "proposals": options}
+
 
 # === БАЗОВЫЕ ЭНДПОИНТЫ (Computer Vision) ===
 

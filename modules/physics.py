@@ -1,3 +1,4 @@
+from enum import Enum
 import copy
 
 try:
@@ -15,6 +16,13 @@ except ModuleNotFoundError:
 else:
     _PYNITE_IMPORT_ERROR = None
 
+
+
+
+class SupportType(str, Enum):
+    FLOOR = "FLOOR"
+    BEAM_CLAMP = "BEAM_CLAMP"
+    SUSPENDED = "SUSPENDED"
 
 class StructuralBrain:
     def __init__(self):
@@ -35,8 +43,13 @@ class StructuralBrain:
 
         for n in nodes:
             model.add_node(n['id'], n['x'], n['y'], n['z'])
-            if n['z'] <= 0.05 or n['id'] in fixed_nodes:
-                # Земля или навесная опора
+            support_type = n.get('support_type', SupportType.FLOOR.value if n['z'] <= 0.05 else SupportType.SUSPENDED.value)
+            if support_type == SupportType.FLOOR.value or n['id'] in fixed_nodes:
+                model.def_support(n['id'], True, True, True, True, True, True)
+            elif support_type == SupportType.BEAM_CLAMP.value:
+                # Зажим на балке: фиксируем поступательные степени свободы, допускаем малый поворот
+                model.def_support(n['id'], True, True, True, False, False, False)
+            elif support_type == SupportType.SUSPENDED.value and n['id'] in fixed_nodes:
                 model.def_support(n['id'], True, True, True, True, True, True)
 
         for b in beams:
