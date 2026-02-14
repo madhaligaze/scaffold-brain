@@ -1,9 +1,28 @@
-fastapi
-uvicorn
-numpy
-PyNiteFEA
-ultralytics  # AI для зрения
-trimesh      # 3D геометрия
-python-multipart # Для загрузки фото
-scipy        # Математика
-networkx     # Графы связей
+# Core Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.6.0
+python-multipart==0.0.9
+
+# Computer Vision
+ultralytics==8.1.0  # YOLOv8
+opencv-python==4.9.0.80
+opencv-contrib-python==4.9.0.80
+Pillow==10.2.0
+
+# Scientific Computing
+numpy==1.26.3
+scipy==1.12.0
+scikit-learn==1.4.0
+
+# Finite Element Analysis
+PyNite==0.0.89  # или Pynite, в зависимости от установленной версии
+
+# Optional: для ускорения
+# torch==2.1.2  # Если нужно GPU для YOLO
+# torchvision==0.16.2
+
+# Development Tools
+pytest==8.0.0
+black==24.1.0
+flake8==7.0.0
