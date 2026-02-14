@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+numpy
+PyNiteFEA
+ultralytics  # AI для зрения
+trimesh      # 3D геометрия
+python-multipart # Для загрузки фото
+scipy        # Математика
+networkx     # Графы связей
