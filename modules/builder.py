@@ -6,6 +6,8 @@ from collections import defaultdict
 
 class ScaffoldGenerator:
     """Генератор вариантов строительных лесов с учетом складских остатков"""
+
+    LAYHER_LEDGER_STANDARDS = [0.73, 1.09, 1.57, 2.07, 2.57, 3.07]
     
     def __init__(self):
         # Доступные наборы материалов (Склад)
@@ -30,7 +32,7 @@ class ScaffoldGenerator:
         # 1. Вариант: "Максимальная надежность" (обычно мелкий шаг)
         options.append(self._create_variant(
             target_width, target_height, target_depth, 
-            stand_len=2.0, ledger_len=1.0, 
+            stand_len=2.0, ledger_len=1.09, 
             label="Надежный (усиленный)",
             obstacles=obstacles
         ))
@@ -38,7 +40,7 @@ class ScaffoldGenerator:
         # 2. Вариант: "Минимум материала" (максимально длинные пролеты)
         options.append(self._create_variant(
             target_width, target_height, target_depth, 
-            stand_len=3.0, ledger_len=2.0, 
+            stand_len=3.0, ledger_len=2.07, 
             label="Экономичный (минимум деталей)",
             obstacles=obstacles
         ))
@@ -46,8 +48,8 @@ class ScaffoldGenerator:
         # 3. Вариант: "Наличие на складе" (нестандартные размеры)
         options.append(self._create_variant(
             target_width, target_height, target_depth, 
-            stand_len=2.5, ledger_len=2.13, 
-            label="Из наличия (Склад: 2.5м x 2.13м)",
+            stand_len=2.5, ledger_len=2.57, 
+            label="Из наличия (Склад: 2.5м x 2.57м)",
             obstacles=obstacles
         ))
 
@@ -188,20 +190,20 @@ class ScaffoldGenerator:
         variants = []
 
         manual_anchors = normalized_user or normalized_ai
-        manual = self._create_variant(width, height, depth, stand_len=2.0, ledger_len=1.5, label="По вашим отметкам")
+        manual = self._create_variant(width, height, depth, stand_len=2.0, ledger_len=1.57, label="По вашим отметкам")
         manual["strategy"] = "MANUAL"
         manual["anchors"] = manual_anchors
         manual["support_summary"] = self._support_summary(manual_anchors)
         variants.append(manual)
 
         hybrid_anchors = self._add_floor_supports(normalized_user, normalized_ai)
-        hybrid = self._create_variant(width, height, depth, stand_len=2.5, ledger_len=2.0, label="Безопасный гибрид")
+        hybrid = self._create_variant(width, height, depth, stand_len=2.5, ledger_len=2.07, label="Безопасный гибрид")
         hybrid["strategy"] = "HYBRID"
         hybrid["anchors"] = hybrid_anchors
         hybrid["support_summary"] = self._support_summary(hybrid_anchors)
         variants.append(hybrid)
 
-        efficiency = self._create_variant(width, height, depth, stand_len=3.0, ledger_len=2.13, label="Экономия (Склад)")
+        efficiency = self._create_variant(width, height, depth, stand_len=3.0, ledger_len=2.57, label="Экономия (Склад)")
         efficiency["strategy"] = "EFFICIENCY"
         efficiency["anchors"] = hybrid_anchors
         efficiency["support_summary"] = self._support_summary(hybrid_anchors)
