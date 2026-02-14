@@ -233,19 +233,46 @@ async def session_model(session_id: str):
                 })
             return resolved
 
-        # 3) Цикл самокритики: до 3 итераций коррекции коллизий
+        def split_beam(beam: Dict[str, Any]) -> List[Dict[str, Any]]:
+            midpoint = geometry.get_midpoint(beam["start"], beam["end"])
+            return [
+                {
+                    "id": f"{beam['id']}_a",
+                    "type": beam.get("type", "ledger"),
+                    "start": dict(beam["start"]),
+                    "end": midpoint,
+                },
+                {
+                    "id": f"{beam['id']}_b",
+                    "type": beam.get("type", "ledger"),
+                    "start": midpoint,
+                    "end": dict(beam["end"]),
+                },
+            ]
+
+        # 3) Цикл самокритики: геометрический сдвиг + замена длинного ригеля на два коротких
         attempts = 0
         elements = beams_with_coords()
         collisions = geometry.check_collisions(elements)
-        while collisions and attempts < 3:
-            for c in collisions:
-                beam_id = c.get("beam_id")
-                beam = next((e for e in elements if e["id"] == beam_id), None)
-                if not beam:
+        while collisions and attempts < 4:
+            updated_elements: List[Dict[str, Any]] = []
+            collision_ids = {c.get("beam_id") for c in collisions}
+
+            for beam in elements:
+                if beam["id"] not in collision_ids:
+                    updated_elements.append(beam)
                     continue
-                # Простая автокоррекция: смещаем проблемную балку по Y на 0.15м
+
+                beam_length = geometry.get_distance(beam["start"], beam["end"])
+                if beam_length >= 1.9 and beam.get("type") in {"horizontal_x", "horizontal_y", "ledger"}:
+                    updated_elements.extend(split_beam(beam))
+                    continue
+
                 beam["start"]["y"] += 0.15
                 beam["end"]["y"] += 0.15
+                updated_elements.append(beam)
+
+            elements = updated_elements
             collisions = geometry.check_collisions(elements)
             attempts += 1
 

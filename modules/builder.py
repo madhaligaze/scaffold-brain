@@ -8,6 +8,23 @@ class ScaffoldGenerator:
     """Генератор вариантов строительных лесов с учетом складских остатков"""
 
     LAYHER_LEDGER_STANDARDS = [0.73, 1.09, 1.57, 2.07, 2.57, 3.07]
+    LAYHER_LEDGER_WEIGHT_KG = {
+        0.73: 5.8,
+        1.09: 7.2,
+        1.57: 9.1,
+        2.07: 11.4,
+        2.57: 13.8,
+        3.07: 16.6,
+    }
+    LAYHER_STAND_WEIGHT_KG = {
+        1.0: 6.2,
+        2.0: 11.9,
+        2.5: 14.3,
+        3.0: 16.8,
+    }
+    LAYHER_DECK_WEIGHT_KG = {1.57: 15.5, 2.07: 18.2, 2.57: 21.0, 3.07: 23.4}
+    LAYHER_ACCESS_DECK_WEIGHT_KG = {1.57: 20.6, 2.07: 24.5, 2.57: 28.7, 3.07: 32.8}
+    LAYHER_COUPLER_WEIGHT_KG = 1.25
     
     def __init__(self):
         # Доступные наборы материалов (Склад)
@@ -165,17 +182,113 @@ class ScaffoldGenerator:
                         })
                         beam_id += 1
         
+        node_lookup = {node["id"]: node for node in nodes}
+        nomenclature = self._generate_nomenclature(beams, node_lookup)
+        beam_weight = self._calculate_beam_weight(beams, node_lookup)
+        extra_weight = self._calculate_nomenclature_weight(nomenclature)
+
         return {
             "variant_name": label,
             "material_info": f"Стойки: {stand_len}м, Ригели: {ledger_len}м",
             "nodes": nodes,
             "beams": beams,
+            "nomenclature": nomenclature,
             "stats": {
                 "total_nodes": len(nodes),
                 "total_beams": len(beams),
-                "total_weight_kg": len(beams) * 15  # примерно 15 кг на балку
+                "total_decks": len(nomenclature["decks"]),
+                "total_access_decks": len(nomenclature["access_decks"]),
+                "total_couplers": len(nomenclature["couplers"]),
+                "total_weight_kg": round(beam_weight + extra_weight, 2)
             }
         }
+
+    def _generate_nomenclature(self, beams: List[Dict], node_lookup: Dict[str, Dict]) -> Dict[str, List[Dict]]:
+        decks: List[Dict] = []
+        access_decks: List[Dict] = []
+        couplers: List[Dict] = []
+
+        horizontal_beams = [b for b in beams if b.get("type") in {"horizontal_x", "horizontal_y"}]
+        for idx, beam in enumerate(horizontal_beams):
+            start_node = node_lookup.get(beam["start"])
+            end_node = node_lookup.get(beam["end"])
+            if not start_node or not end_node:
+                continue
+            if min(start_node["z"], end_node["z"]) < 0.5:
+                continue
+
+            span = self._beam_length(start_node, end_node)
+            layher_size = self._closest_standard(span, self.LAYHER_DECK_WEIGHT_KG)
+            deck_item = {
+                "id": f"deck_{beam['id']}",
+                "beam_id": beam["id"],
+                "article": f"SteelDeck-{layher_size:.2f}m",
+                "length_m": layher_size,
+                "level_z": round((start_node["z"] + end_node["z"]) / 2.0, 3),
+            }
+            decks.append(deck_item)
+
+            if idx % 6 == 0:
+                access_decks.append(
+                    {
+                        "id": f"access_{beam['id']}",
+                        "beam_id": beam["id"],
+                        "article": f"AccessDeck-{layher_size:.2f}m",
+                        "length_m": layher_size,
+                        "level_z": deck_item["level_z"],
+                    }
+                )
+
+        for beam in beams:
+            start_node = node_lookup.get(beam["start"])
+            end_node = node_lookup.get(beam["end"])
+            if not start_node or not end_node:
+                continue
+            length = self._beam_length(start_node, end_node)
+            closest = min(self.LAYHER_LEDGER_STANDARDS, key=lambda v: abs(v - length))
+            if beam.get("type") == "diagonal" or abs(closest - length) > 0.05:
+                couplers.append(
+                    {
+                        "id": f"coupler_{beam['id']}",
+                        "beam_id": beam["id"],
+                        "article": "SwivelCoupler",
+                        "weight_kg": self.LAYHER_COUPLER_WEIGHT_KG,
+                    }
+                )
+
+        return {"decks": decks, "access_decks": access_decks, "couplers": couplers}
+
+    def _beam_length(self, start_node: Dict, end_node: Dict) -> float:
+        return float(
+            np.sqrt(
+                (float(start_node["x"]) - float(end_node["x"])) ** 2
+                + (float(start_node["y"]) - float(end_node["y"])) ** 2
+                + (float(start_node["z"]) - float(end_node["z"])) ** 2
+            )
+        )
+
+    def _closest_standard(self, value: float, reference: Dict[float, float]) -> float:
+        return min(reference.keys(), key=lambda candidate: abs(candidate - value))
+
+    def _calculate_beam_weight(self, beams: List[Dict], node_lookup: Dict[str, Dict]) -> float:
+        total = 0.0
+        for beam in beams:
+            start_node = node_lookup.get(beam["start"])
+            end_node = node_lookup.get(beam["end"])
+            if not start_node or not end_node:
+                continue
+            length = self._beam_length(start_node, end_node)
+            if beam.get("type") == "vertical":
+                total += self.LAYHER_STAND_WEIGHT_KG[self._closest_standard(length, self.LAYHER_STAND_WEIGHT_KG)]
+            else:
+                total += self.LAYHER_LEDGER_WEIGHT_KG[self._closest_standard(length, self.LAYHER_LEDGER_WEIGHT_KG)]
+        return total
+
+    def _calculate_nomenclature_weight(self, nomenclature: Dict[str, List[Dict]]) -> float:
+        deck_weight = sum(self.LAYHER_DECK_WEIGHT_KG[self._closest_standard(d["length_m"], self.LAYHER_DECK_WEIGHT_KG)] for d in nomenclature["decks"])
+        access_weight = sum(self.LAYHER_ACCESS_DECK_WEIGHT_KG[self._closest_standard(d["length_m"], self.LAYHER_ACCESS_DECK_WEIGHT_KG)] for d in nomenclature["access_decks"])
+        coupler_weight = len(nomenclature["couplers"]) * self.LAYHER_COUPLER_WEIGHT_KG
+        return deck_weight + access_weight + coupler_weight
     
 
     def generate_smart_options(self, user_points: List[Dict], ai_points: List[Dict], bounds: Dict) -> List[Dict]:
