@@ -190,9 +190,10 @@ async def quality_check(
         ar_points_list = []
     
     try:
-        detected = eyes.analyze_scene(contents, distance)
+        frame = eyes._decode_image_bgr(contents)
+        detected = eyes.analyze_scene(distance_to_target=distance, frame=frame)
         quality = diagnostician.check_data_quality(
-            contents, detected, ar_points_list, distance
+            frame, detected, ar_points_list, distance
         )
         
         return {
