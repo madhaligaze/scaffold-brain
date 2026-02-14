@@ -71,6 +71,10 @@ class VibrationSource(BaseModel):
     type: str = "conveyor"
 
 
+
+class VibrationAnalysisRequest(StructureData):
+    vibration_source: VibrationSource
+
 # === БАЗОВЫЕ ЭНДПОИНТЫ (Computer Vision) ===
 
 @app.post("/analyze/photo")
@@ -200,10 +204,7 @@ async def wind_analysis(
 
 
 @app.post("/dynamics/vibration-analysis")
-async def vibration_analysis(
-    data: StructureData,
-    vibration_source: VibrationSource
-):
+async def vibration_analysis(data: VibrationAnalysisRequest):
     """
     Анализ вибрации от оборудования (конвейер, станок).
     Проверяет риск резонанса и предлагает решения.
@@ -213,7 +214,7 @@ async def vibration_analysis(
     nodes_dict = [n.dict() for n in data.nodes]
     beams_dict = [b.dict() for b in data.beams]
     
-    vib_source = vibration_source.dict()
+    vib_source = data.vibration_source.dict()
     
     result = wind_analyzer.calculate_vibration_impact(
         nodes_dict, beams_dict, vib_source

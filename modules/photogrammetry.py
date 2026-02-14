@@ -4,10 +4,20 @@
 Компенсирует погрешности AR-датчиков через триангуляцию.
 """
 import numpy as np
-import cv2
+try:
+    import cv2
+except Exception:  # pragma: no cover
+    cv2 = None
 from typing import List, Dict, Tuple
-from scipy.spatial import distance
-from sklearn.cluster import DBSCAN
+try:
+    from scipy.spatial import distance
+except Exception:  # pragma: no cover
+    distance = None
+
+try:
+    from sklearn.cluster import DBSCAN
+except Exception:  # pragma: no cover
+    DBSCAN = None
 
 class MultiViewFusion:
     """
@@ -58,8 +68,12 @@ class MultiViewFusion:
         all_points = np.array(all_points)
         
         # 2. Кластеризация через DBSCAN (группируем близкие точки)
-        clustering = DBSCAN(eps=merge_threshold, min_samples=1).fit(all_points)
-        labels = clustering.labels_
+        if DBSCAN is not None:
+            clustering = DBSCAN(eps=merge_threshold, min_samples=1).fit(all_points)
+            labels = clustering.labels_
+        else:
+            # Fallback: каждая точка отдельным кластером
+            labels = np.arange(len(all_points))
         
         # 3. Усредняем точки в каждом кластере
         unique_labels = set(labels)
@@ -113,7 +127,10 @@ class MultiViewFusion:
                 continue
             
             # Для каждой точки в cloud1 находим ближайшую в cloud2
-            distances = distance.cdist(cloud1, cloud2, 'euclidean')
+            if distance is not None:
+                distances = distance.cdist(cloud1, cloud2, 'euclidean')
+            else:
+                distances = np.linalg.norm(cloud1[:, None, :] - cloud2[None, :, :], axis=2)
             min_distances = np.min(distances, axis=1)
             
             # Медианное расстояние = мера дрейфа
@@ -191,10 +208,12 @@ class FeatureMatching:
     
     def __init__(self):
         # Используем SIFT или ORB для поиска особых точек
-        try:
-            self.detector = cv2.SIFT_create()
-        except:
-            self.detector = cv2.ORB_create()
+        self.detector = None
+        if cv2 is not None:
+            try:
+                self.detector = cv2.SIFT_create()
+            except Exception:
+                self.detector = cv2.ORB_create()
     
     def match_images(self, img1_bytes: bytes, img2_bytes: bytes) -> Dict:
         """
@@ -208,6 +227,9 @@ class FeatureMatching:
                 "translation": [dx, dy]  # смещение
             }
         """
+        if cv2 is None or self.detector is None:
+            return {"matches_count": 0, "confidence": 0, "rotation_deg": 0, "translation_px": [0, 0]}
+
         # Декодируем изображения
         nparr1 = np.frombuffer(img1_bytes, np.uint8)
         nparr2 = np.frombuffer(img2_bytes, np.uint8)
@@ -226,7 +248,7 @@ class FeatureMatching:
             return {"matches_count": 0, "confidence": 0, "rotation": 0, "translation": [0, 0]}
         
         # Сопоставление через FLANN или BruteForce
-        if isinstance(self.detector, cv2.SIFT):
+        if hasattr(cv2, "SIFT") and isinstance(self.detector, cv2.SIFT):
             index_params = dict(algorithm=1, trees=5)
             search_params = dict(checks=50)
             matcher = cv2.FlannBasedMatcher(index_params, search_params)
