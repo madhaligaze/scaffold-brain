@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import io
 import logging
+import base64
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -196,7 +197,7 @@ class Eyes:
         
         return detections
 
-    def _decode_image_bgr(self, image_bytes: bytes) -> np.ndarray:
+    def _decode_image_bgr(self, image_bytes: bytes | str) -> np.ndarray:
         """
         Декодирует изображение в BGR формат (для YOLO и cv2).
         
@@ -209,6 +210,11 @@ class Eyes:
         Returns:
             numpy array в BGR формате (H, W, 3)
         """
+        if isinstance(image_bytes, str):
+            # Поддержка base64-потока от Android (с возможным data URI префиксом)
+            payload = image_bytes.split(",", 1)[-1] if image_bytes.startswith("data:") else image_bytes
+            image_bytes = base64.b64decode(payload)
+
         if CV2_AVAILABLE:
             # Оптимальный путь: cv2 напрямую декодирует в BGR
             nparr = np.frombuffer(image_bytes, np.uint8)
