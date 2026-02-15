@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     
     # === Сервер ===
-    HOST: str = "0.0.0.0"
+    HOST: str = "192.168.1.148"
     PORT: int = 8000
     RELOAD: bool = False
     

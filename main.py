@@ -21,6 +21,7 @@ from modules.photogrammetry import PhotogrammetrySystem
 from modules.session import DesignSession
 from modules.geometry import WorldGeometry
 from modules.storage import SessionStorage
+from core.config import settings
 
 app = FastAPI(
     title="Bauflex AI Brain",
@@ -760,4 +761,4 @@ async def get_stats():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=settings.HOST, port=settings.PORT, reload=settings.RELOAD)
