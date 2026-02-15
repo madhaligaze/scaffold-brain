@@ -22,12 +22,13 @@ from modules.builder import ScaffoldExpert, ScaffoldGenerator
 from modules.dynamics import DynamicLoadAnalyzer, ProgressiveCollapseAnalyzer
 from modules.photogrammetry import PhotogrammetrySystem
 from modules.session import DesignSession, SessionStorage
+from modules.geometry import WorldGeometry
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
-    title="Build AI Brain",
+    title="Bauflex AI Brain",
     description="Engineering Intelligence для строительных лесов",
     version="2.0.0"
 )
@@ -39,8 +40,10 @@ diagnostician = SceneDiagnostician()
 vision_system = VisionSystem()
 engineer = StructuralBrain()
 expert = ScaffoldExpert()
+generator = ScaffoldGenerator()
 wind_analyzer = DynamicLoadAnalyzer()
 photogrammetry = PhotogrammetrySystem()
+geometry = WorldGeometry()
 
 # Ленивая инициализация для collapse analyzer (требует physics engine)
 collapse_analyzer = None
@@ -146,6 +149,69 @@ async def stream_session_data(session_id: str, data: Dict[str, Any] = Body(...))
 
     session_storage.save(session)
     return {"status": "RECEIVING", "ai_hints": feedback}
+
+
+@app.post("/session/model/{session_id}")
+async def session_model(session_id: str):
+    """
+    Финализирует сессию: геометрия + коллизии + физика → AR-ready формат.
+    Использует generate_smart_options для умной расстановки лесов.
+    """
+    session = get_or_restore_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session.status = "MODELING"
+    session_storage.save(session)
+
+    # 1) Генерируем умные варианты на основе точек пользователя и AI
+    try:
+        proposals = generator.generate_smart_options(
+            user_points=session.user_anchors,
+            ai_points=session.detected_supports,
+            bounds=session.get_bounds()
+        )
+    except Exception:
+        logger.error("generate_smart_options failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Ошибка генерации вариантов")
+
+    # 2) Для каждого варианта: коллизии → физика → оценка безопасности
+    final_options = []
+    for prop in proposals:
+        # Проверка коллизий — если есть, пробуем починить
+        try:
+            collisions = geometry.check_collisions(prop.get("elements", []))
+            if collisions:
+                prop = generator.fix_collisions(prop, collisions)
+        except Exception:
+            logger.warning("Collision check failed for variant, skipping fix", exc_info=True)
+
+        # Расчет нагрузок
+        try:
+            physics_res = engineer.calculate_load_map(
+                prop.get("nodes", []),
+                prop.get("elements", [])
+            )
+        except Exception:
+            logger.warning("Physics calc failed for variant", exc_info=True)
+            physics_res = {"status": "ERROR", "data": []}
+
+        # Оценка безопасности: 0–100
+        safety_score = 0
+        if physics_res.get("status") == "OK":
+            loads = [r["load_ratio"] for r in physics_res.get("data", [])]
+            if loads:
+                max_load = max(loads)
+                safety_score = int((1.0 - min(max_load, 1.0)) * 100)
+
+        prop["safety_score"] = safety_score
+        prop["physics"] = physics_res
+        final_options.append(prop)
+
+    session.status = "DONE"
+    session_storage.save(session)
+
+    return {"status": "SUCCESS", "options": final_options}
 
 
 # === БАЗОВЫЕ ЭНДПОИНТЫ (Computer Vision) ===
@@ -554,7 +620,8 @@ async def health_check():
             "physics": True,
             "expert": True,
             "dynamics": True,
-            "photogrammetry": True
+            "photogrammetry": True,
+            "geometry": True
         },
         "version": "2.0.0"
     }
