@@ -1,10 +1,10 @@
 # modules/__init__.py
 """
-Bauflex AI Brain - Модули искусственного интеллекта для строительных лесов.
+Build AI Brain - Модули искусственного интеллекта для строительных лесов.
 """
 
 __version__ = "2.0.0"
-__author__ = "Bauflex Engineering Team"
+__author__ = "Build Engineering Team"
 
 from .vision import Eyes, SceneDiagnostician, VisionSystem
 from .physics import StructuralBrain

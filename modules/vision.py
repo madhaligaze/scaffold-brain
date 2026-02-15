@@ -1,12 +1,12 @@
 # modules/vision.py
 """
-Computer Vision модуль для Bauflex AI Brain.
+Computer Vision модуль для Build AI Brain.
 Детекция объектов (YOLO), оценка размеров, диагностика качества данных.
 
 ИСПРАВЛЕНИЯ v2.2 (по результатам code review):
 - BUGFIX: Устранено двойное декодирование изображения (Eyes.analyze_scene теперь
   принимает готовый frame; VisionSystem.process_scene декодирует ОДИН раз)
-- Жёсткий маппинг классов YOLO (BAUFLEX_CLASS_MAP): beam / pipe_obstacle /
+- Жёсткий маппинг классов YOLO (Build_CLASS_MAP): beam / pipe_obstacle /
   safety_equipment и т.д. — физический движок различает несущие и ненесущие элементы
 - _check_occlusion: добавлена проверка «объект занимает >80% кадра» (нет контекста)
 - Новый метод _check_depth_occlusion: IoU-анализ перекрытий между объектами
@@ -65,10 +65,10 @@ class Eyes:
     - Fallback режим при отсутствии YOLO
     """
 
-    # Жёсткий маппинг классов для Bauflex.
+    # Жёсткий маппинг классов для Build.
     # КРИТИЧНО: различать несущие балки и трубы вентиляции,
     # иначе физический движок будет пытаться крепить леса к пластику!
-    BAUFLEX_CLASS_MAP: Dict[int, str] = {
+    Build_CLASS_MAP: Dict[int, str] = {
         0: "beam",              # Несущая балка — точка крепления лесов
         1: "pipe_obstacle",     # Труба-препятствие — НЕЛЬЗЯ использовать как опору
         2: "safety_equipment",  # Защитное оборудование (каска, ограждение)
@@ -268,11 +268,11 @@ class Eyes:
                 real_w = (px_w * distance) / fx
                 real_h = (px_h * distance) / fy
                 
-                # Маппинг классов: сначала Bauflex-специфичный словарь,
+                # Маппинг классов: сначала Build-специфичный словарь,
                 # затем имена из модели, затем generic fallback.
                 # Важно: pipe_obstacle ≠ beam — физический движок должен их различать!
                 obj_type = (
-                    self.BAUFLEX_CLASS_MAP.get(cls)
+                    self.Build_CLASS_MAP.get(cls)
                     or names.get(cls, f"class_{cls}")
                 )
 

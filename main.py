@@ -1,6 +1,6 @@
 # main.py
 """
-Bauflex AI Brain - Серверный "мозг" для Engineering Intelligence системы.
+Build AI Brain - Серверный "мозг" для Engineering Intelligence системы.
 
 Интегрирует:
 - Computer Vision (YOLO)
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
-    title="Bauflex AI Brain",
+    title="Build AI Brain",
     description="Engineering Intelligence для строительных лесов",
     version="2.0.0"
 )

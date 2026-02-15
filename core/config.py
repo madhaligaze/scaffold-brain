@@ -1,6 +1,6 @@
 # core/config.py
 """
-Конфигурация Bauflex AI Brain
+Конфигурация Build AI Brain
 """
 import os
 from typing import Optional
@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     """Настройки приложения"""
     
     # === Основные настройки ===
-    APP_NAME: str = "Bauflex AI Brain"
+    APP_NAME: str = "Build AI Brain"
     VERSION: str = "2.0.0"
     DEBUG: bool = False
     
