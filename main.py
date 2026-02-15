@@ -9,14 +9,22 @@ Bauflex AI Brain - Серверный "мозг" для Engineering Intelligence
 - Multi-view Photogrammetry
 - Expert System (Safety Rules)
 """
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+import logging
+import uuid
+import base64
+from binascii import Error as B64Error
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from modules.vision import Eyes, SceneDiagnostician, VisionSystem
 from modules.physics import StructuralBrain
 from modules.builder import ScaffoldExpert, ScaffoldGenerator
 from modules.dynamics import DynamicLoadAnalyzer, ProgressiveCollapseAnalyzer
 from modules.photogrammetry import PhotogrammetrySystem
+from modules.session import DesignSession, SessionStorage
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
     title="Bauflex AI Brain",
@@ -36,6 +44,20 @@ photogrammetry = PhotogrammetrySystem()
 
 # Ленивая инициализация для collapse analyzer (требует physics engine)
 collapse_analyzer = None
+
+# === СЕССИИ ЗАМЕРА ===
+active_sessions: Dict[str, DesignSession] = {}
+session_storage = SessionStorage()
+
+
+def get_or_restore_session(session_id: str) -> Optional[DesignSession]:
+    if session_id in active_sessions:
+        return active_sessions[session_id]
+    restored = session_storage.load(session_id)
+    if restored:
+        active_sessions[session_id] = restored
+    return restored
+
 
 def get_collapse_analyzer():
     global collapse_analyzer
@@ -74,6 +96,57 @@ class VibrationSource(BaseModel):
 
 class VibrationAnalysisRequest(StructureData):
     vibration_source: VibrationSource
+
+
+@app.post("/session/start")
+async def start_session():
+    """Создает новую сессию замера и включает сбор keyframes."""
+    sid = str(uuid.uuid4())
+    active_sessions[sid] = DesignSession(session_id=sid, vision_system=vision_system)
+    session_storage.save(active_sessions[sid])
+    return {"session_id": sid, "status": "MEASURING"}
+
+
+@app.post("/session/stream/{session_id}")
+async def stream_session_data(session_id: str, data: Dict[str, Any] = Body(...)):
+    """Принимает потоковые данные Android: image/pose/markers."""
+    session = get_or_restore_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status != "MEASURING":
+        raise HTTPException(status_code=409, detail="Session is not in measuring state")
+
+    # Шаг 1: декодируем изображение — ошибка на стороне клиента
+    try:
+        image_payload = data.get("image", b"")
+        if isinstance(image_payload, str):
+            image_bytes = base64.b64decode(image_payload)
+        else:
+            image_bytes = bytes(image_payload)
+    except (B64Error, ValueError):
+        logger.warning("Пришла битая картинка", exc_info=True)
+        return {
+            "status": "RECEIVING",
+            "ai_hints": {"instructions": [], "warnings": ["Ошибка обработки кадра"]},
+        }
+
+    # Шаг 2: обрабатываем кадр — ошибка внутри нашей логики
+    try:
+        feedback = session.update_world_model(
+            image_bytes=image_bytes,
+            pose_matrix=data.get("pose", []),
+            markers=data.get("markers", []),
+        )
+    except Exception:
+        logger.error("ERROR processing frame", exc_info=True)
+        return {
+            "status": "RECEIVING",
+            "ai_hints": {"instructions": [], "warnings": ["Ошибка обработки кадра"]},
+        }
+
+    session_storage.save(session)
+    return {"status": "RECEIVING", "ai_hints": feedback}
+
 
 # === БАЗОВЫЕ ЭНДПОИНТЫ (Computer Vision) ===
 
