@@ -1,28 +1,30 @@
-# Core Framework
+# ── Core Framework ───────────────────────────────────────────────────────────
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 pydantic==2.6.0
+pydantic-settings==2.2.1   # ИСПРАВЛЕНО: отсутствовал → core/config.py падал с ImportError
 python-multipart==0.0.9
 
-# Computer Vision
-ultralytics==8.1.0  # YOLOv8
+# ── Computer Vision ───────────────────────────────────────────────────────────
+ultralytics==8.1.0          # YOLOv8
 opencv-python==4.9.0.80
 opencv-contrib-python==4.9.0.80
 Pillow==10.2.0
 
-# Scientific Computing
+# ── Scientific Computing ──────────────────────────────────────────────────────
 numpy==1.26.3
 scipy==1.12.0
 scikit-learn==1.4.0
 
-# Finite Element Analysis
-PyNite==0.0.89  # или Pynite, в зависимости от установленной версии
+# ── Finite Element Analysis ───────────────────────────────────────────────────
+# PyNite (0.0.89) — старый API: from PyNite import FEModel3D
+# pynitefea (2.x)  — новый API: from Pynite import FEModel3D
+# physics.py обрабатывает оба варианта автоматически.
+# Установите одно из двух:
+PyNite==0.0.89
+# pynitefea>=2.0.0
 
-# Optional: для ускорения
-# torch==2.1.2  # Если нужно GPU для YOLO
-# torchvision==0.16.2
-
-# Development Tools
+# ── Dev Tools ─────────────────────────────────────────────────────────────────
 pytest==8.0.0
 black==24.1.0
 flake8==7.0.0
