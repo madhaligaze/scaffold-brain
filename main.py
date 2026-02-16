@@ -74,6 +74,50 @@ scaffold_generator = ScaffoldGenerator()
 physics_brain = StructuralBrain()
 collision_solver = CollisionSolver(clearance=0.15)
 
+
+def _normalize_camera_pose(camera_pose: Optional[List[float]]) -> List[float]:
+    """Нормализация camera_pose до формата [tx,ty,tz,qx,qy,qz,qw]."""
+    if not camera_pose:
+        return [0, 0, 0, 0, 0, 0, 1]
+
+    cp = list(camera_pose)
+    if len(cp) >= 7:
+        return cp[:7]
+
+    if len(cp) == 6:
+        # Часто с Android приходит только position + euler, пока принимаем как identity quaternion.
+        return [cp[0], cp[1], cp[2], 0, 0, 0, 1]
+
+    return [0, 0, 0, 0, 0, 0, 1]
+
+
+def _build_layher_bom_from_elements(elements: List[Dict[str, Any]]) -> BillOfMaterials:
+    """Формирует BOM Layher из full_structure/elements."""
+    bom = BillOfMaterials()
+
+    for el in elements:
+        etype = (el.get('type') or 'ledger').lower()
+        length = float(el.get('length', 0) or 0)
+
+        if etype in ('standard', 'vertical'):
+            std_length = LayherStandards.get_nearest_standard_height(length)
+            code = f"S-{int(std_length * 100)}"
+        elif etype in ('ledger', 'transom'):
+            std_length = LayherStandards.get_nearest_ledger_length(length)
+            code = f"L-{int(std_length * 100)}"
+        elif etype == 'diagonal':
+            std_length = min(LayherStandards.DIAGONAL_LENGTHS, key=lambda x: abs(x - length))
+            code = f"D-{int(std_length * 100)}"
+        elif etype == 'deck':
+            deck_len = LayherStandards.get_nearest_deck_length(length)
+            code = LayherStandards.DECK_ARTICLES.get(deck_len, f"P-{int(deck_len * 100)}")
+        else:
+            code = 'UNKNOWN'
+
+        bom.add_component(code, 1)
+
+    return bom
+
 # v3.2: PostProcessor для диагоналей и настилов
 if BRAIN_V3_AVAILABLE:
     post_processor = StructuralPostProcessor()
@@ -261,7 +305,11 @@ async def stream_frame(request: StreamFrameRequest):
             timestamp=request.timestamp or time.time(),
             image_data=request.frame_base64,
             camera_position=request.camera_position,
-            ar_points=[p.dict() for p in request.ar_points]
+            ar_points=[p.dict() for p in request.ar_points],
+            quality_metrics={
+                "incoming_point_cloud_points": len(request.point_cloud),
+                "android_depth_ready": bool(request.point_cloud),
+            },
         )
 
         # ── НОВОЕ: Заполняем VoxelWorld из point_cloud ──────────────────────
@@ -535,29 +583,13 @@ async def export_bom(request: ExportBOMRequest):
             raise HTTPException(status_code=400, detail="Неверный индекс варианта")
         
         variant = session.generated_variants[request.variant_index]
-        
-        # Генерируем BOM
-        bom = BillOfMaterials()
-        for beam in variant['beams']:
-            beam_type = beam.get('type', 'ledger')
-            length = beam.get('length', 2.0)
-            
-            if beam_type == 'standard':
-                std_length = LayherStandards.get_nearest_standard_height(length)
-                code = f"S-{int(std_length * 100)}"
-            elif beam_type in ['ledger', 'transom']:
-                std_length = LayherStandards.get_nearest_ledger_length(length)
-                code = f"L-{int(std_length * 100)}"
-            elif beam_type == 'diagonal':
-                std_length = min(
-                    LayherStandards.DIAGONAL_LENGTHS,
-                    key=lambda x: abs(x - length)
-                )
-                code = f"D-{int(std_length * 100)}"
-            else:
-                code = "UNKNOWN"
-            
-            bom.add_component(code, 1)
+
+        # Генерируем BOM из full_structure (если есть), иначе fallback на beams
+        source_elements = variant.get('full_structure') or variant.get('elements')
+        if not source_elements:
+            source_elements = variant.get('beams', [])
+
+        bom = _build_layher_bom_from_elements(source_elements)
         
         # Генерируем CSV
         csv_content = bom.export_csv()
@@ -640,6 +672,8 @@ async def ingest_depth_stream(request: DepthStreamRequest):
         raise HTTPException(400, "Ошибка декодирования depth_base64") from exc
 
     voxel_world = session.scene_context.ensure_voxel_world()
+    normalized_pose = _normalize_camera_pose(request.camera_pose)
+
     added = voxel_world.ingest_depth_map(
         depth_bytes=depth_bytes,
         width=request.width,
@@ -648,13 +682,15 @@ async def ingest_depth_stream(request: DepthStreamRequest):
         fy=request.fy,
         cx_px=request.cx_px,
         cy_px=request.cy_px,
-        camera_pose=request.camera_pose,
+        camera_pose=normalized_pose,
     )
 
     return {
         "status": "voxels_updated",
         "added_voxels": added,
         "total_voxels": voxel_world.total_voxels,
+        "camera_pose": normalized_pose,
+        "depth_payload_bytes": len(depth_bytes),
         "message": f"Добавлено {added} вокселей. ИИ видит пространство.",
     }
 
@@ -872,45 +908,71 @@ async def finalize_model(session_id: str):
         f"(added {len(full_structure) - len(skeleton)} bracing/decks)"
     )
 
-    phys_nodes = []
-    phys_beams = []
-    seen_nodes = set()
+    reinforcement_iterations = 0
+    max_reinforcement_iterations = 5
+    physics_data = []
+    physics_status = "COLLAPSE"
 
-    for el in full_structure:
-        for p in [el["start"], el["end"]]:
-            k = f"{p[0]:.2f}_{p[1]:.2f}_{p[2]:.2f}"
-            if k not in seen_nodes:
-                phys_nodes.append(
-                    {
-                        "id": k,
-                        "x": p[0],
-                        "y": p[1],
-                        "z": p[2],
-                        "fixed": abs(p[2]) < 0.1,
-                    }
-                )
-                seen_nodes.add(k)
+    while reinforcement_iterations <= max_reinforcement_iterations:
+        phys_nodes = []
+        phys_beams = []
+        seen_nodes = set()
 
-        s = el["start"]
-        e = el["end"]
-        phys_beams.append(
-            {
-                "id": el["id"],
-                "type": el["type"],
-                "start": f"{s[0]:.2f}_{s[1]:.2f}_{s[2]:.2f}",
-                "end": f"{e[0]:.2f}_{e[1]:.2f}_{e[2]:.2f}",
-                "length": el.get("length", 0),
-            }
+        for el in full_structure:
+            for p in [el["start"], el["end"]]:
+                k = f"{p[0]:.2f}_{p[1]:.2f}_{p[2]:.2f}"
+                if k not in seen_nodes:
+                    phys_nodes.append(
+                        {
+                            "id": k,
+                            "x": p[0],
+                            "y": p[1],
+                            "z": p[2],
+                            "fixed": abs(p[2]) < 0.1,
+                        }
+                    )
+                    seen_nodes.add(k)
+
+            s = el["start"]
+            e = el["end"]
+            phys_beams.append(
+                {
+                    "id": el["id"],
+                    "type": el["type"],
+                    "start": f"{s[0]:.2f}_{s[1]:.2f}_{s[2]:.2f}",
+                    "end": f"{e[0]:.2f}_{e[1]:.2f}_{e[2]:.2f}",
+                    "length": el.get("length", 0),
+                }
+            )
+
+        physics_res = physics_brain.calculate_load_map(phys_nodes, phys_beams)
+
+        if isinstance(physics_res, dict):
+            physics_status = physics_res.get("status", "COLLAPSE")
+            physics_data = physics_res.get("data", [])
+        else:
+            physics_status = getattr(physics_res, "status", "COLLAPSE")
+            physics_data = getattr(physics_res, "beam_loads", [])
+
+        if physics_status != "COLLAPSE":
+            break
+
+        if reinforcement_iterations >= max_reinforcement_iterations:
+            break
+
+        before_len = len(full_structure)
+        full_structure = post_processor.process(full_structure)
+        added = len(full_structure) - before_len
+
+        reinforcement_iterations += 1
+        print(
+            f"  Reinforcement loop #{reinforcement_iterations}: status=COLLAPSE, "
+            f"added {max(0, added)} elements"
         )
 
-    physics_res = physics_brain.calculate_load_map(phys_nodes, phys_beams)
-
-    if isinstance(physics_res, dict):
-        physics_status = physics_res.get("status", "COLLAPSE")
-        physics_data = physics_res.get("data", [])
-    else:
-        physics_status = getattr(physics_res, "status", "COLLAPSE")
-        physics_data = getattr(physics_res, "beam_loads", [])
+        if added <= 0:
+            # Больше нечего добавлять — выходим чтобы избежать бесконечного цикла.
+            break
 
     safety_score = 0
     if physics_status == "OK":
@@ -930,14 +992,23 @@ async def finalize_model(session_id: str):
     else:
         print("⚠️  Physics calculation FAILED (Structure unstable)")
 
+    layher_bom = _build_layher_bom_from_elements(full_structure)
+
     final_options = [
         {
             "id": 1,
             "name": "AI Engineered (Layher Allround)",
             "elements": [],
+            "full_structure": full_structure,
             "safety_score": safety_score,
             "total_weight": sum(e.get("weight", 0) for e in full_structure),
             "physics_status": physics_status,
+            "bom": {
+                "csv": layher_bom.export_csv(),
+                "components": layher_bom.components,
+                "total_weight_kg": layher_bom.get_total_weight(),
+                "estimated_cost_usd": layher_bom.get_total_cost(),
+            },
         }
     ]
 
@@ -962,6 +1033,7 @@ async def finalize_model(session_id: str):
             "total_elements": len(full_structure),
             "added_diagonals": sum(1 for e in full_structure if e["type"] == "diagonal"),
             "added_decks": sum(1 for e in full_structure if e["type"] == "deck"),
+            "reinforcement_iterations": reinforcement_iterations,
             "voxels_used": voxel_world.total_voxels,
         },
     }
