@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Set
 
 try:
     import networkx as nx
@@ -129,6 +129,40 @@ class StructuralGraph:
             "critical_count": sum(1 for b in self._beams.values() if b.color == "red"),
         }
 
+    def find_detached_substructures(self) -> Dict[str, List[str]]:
+        """
+        Ищет подграфы, не имеющие опоры на землю (fixed node).
+
+        Возвращает IDs узлов и балок, которые "левитируют" и должны быть
+        удалены или помечены как COLLAPSED.
+        """
+        fixed_nodes = {nid for nid, n in self._nodes.items() if n.is_fixed}
+        if not self._nodes:
+            return {"nodes": [], "beams": []}
+
+        detached_nodes: Set[str] = set()
+
+        if self._g is not None and len(self._g) > 0:
+            components = nx.connected_components(self._g)
+            for component in components:
+                if not any(node_id in fixed_nodes for node_id in component):
+                    detached_nodes.update(component)
+        else:
+            detached_nodes = self._find_detached_nodes_without_nx(fixed_nodes)
+
+        detached_beams: List[str] = []
+        if detached_nodes:
+            for beam_id, beam in self._beams.items():
+                start = beam.data.get("start")
+                end = beam.data.get("end")
+                if start in detached_nodes or end in detached_nodes:
+                    detached_beams.append(beam_id)
+
+        return {
+            "nodes": sorted(detached_nodes),
+            "beams": sorted(detached_beams),
+        }
+
     def _recalculate_loads(self, beam_ids: List[str]) -> None:
         if not beam_ids:
             return
@@ -162,6 +196,28 @@ class StructuralGraph:
         if self._g is not None and len(self._g) > 0:
             return nx.is_connected(self._g)
         return True
+
+    def _find_detached_nodes_without_nx(self, fixed_nodes: Set[str]) -> Set[str]:
+        """Fallback без networkx: отмечаем все узлы, достижимые от fixed."""
+        adjacency: Dict[str, Set[str]] = {node_id: set() for node_id in self._nodes}
+
+        for beam in self._beams.values():
+            s = beam.data.get("start")
+            e = beam.data.get("end")
+            if s in adjacency and e in adjacency:
+                adjacency[s].add(e)
+                adjacency[e].add(s)
+
+        visited: Set[str] = set()
+        stack: List[str] = [n for n in fixed_nodes if n in adjacency]
+        while stack:
+            current = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            stack.extend(neighbor for neighbor in adjacency.get(current, set()) if neighbor not in visited)
+
+        return {node_id for node_id in adjacency if node_id not in visited}
 
     @staticmethod
     def _ratio_to_color(ratio: float) -> str:

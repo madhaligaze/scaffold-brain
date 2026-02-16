@@ -706,8 +706,8 @@ async def ingest_depth_stream(request: DepthStreamRequest):
     }
 
 
-@app.get("/session/{session_id}/voxel_map")
-async def get_voxel_map(session_id: str):
+def _get_session_voxels_payload(session_id: str) -> Dict[str, Any]:
+    """Единый payload занятых вокселей для мобильной визуализации."""
     if not BRAIN_V3_AVAILABLE:
         return {"voxels": [], "resolution": 0.1, "available": False}
 
@@ -720,6 +720,17 @@ async def get_voxel_map(session_id: str):
         return {"voxels": [], "resolution": 0.1, "message": "Depth map ещё не загружен"}
 
     return vw.to_ar_mesh()
+
+
+@app.get("/session/{session_id}/voxel_map")
+async def get_voxel_map(session_id: str):
+    return _get_session_voxels_payload(session_id)
+
+
+@app.get("/session/voxels/{session_id}")
+async def get_session_voxels(session_id: str):
+    """Список занятых вокселей для AR-оверлея на телефоне."""
+    return _get_session_voxels_payload(session_id)
 
 
 @app.post("/generate/auto")
@@ -1113,6 +1124,25 @@ async def update_structure_realtime(session_id: str, action: Dict[str, Any]):
             "length": el.get("length", 0),
         })
 
+    # Graph Integrity: убираем компоненты, оторванные от фиксированных (земля) узлов.
+    collapsed_nodes = []
+    collapsed_elements = []
+    graph = session.ensure_structural_graph()
+    if graph is not None:
+        graph.load_from_variant({"nodes": phys_nodes, "beams": phys_beams})
+        detached = graph.find_detached_substructures()
+        collapsed_nodes = detached.get("nodes", [])
+        collapsed_elements = detached.get("beams", [])
+
+        if collapsed_elements:
+            collapsed_set = set(collapsed_elements)
+            session.current_structure = [
+                el for el in session.current_structure if el.get("id") not in collapsed_set
+            ]
+            phys_beams = [beam for beam in phys_beams if beam.get("id") not in collapsed_set]
+            nodes_in_use = {beam["start"] for beam in phys_beams} | {beam["end"] for beam in phys_beams}
+            phys_nodes = [node for node in phys_nodes if node.get("id") in nodes_in_use]
+
     physics_res = physics_brain.calculate_load_map(phys_nodes, phys_beams)
     if isinstance(physics_res, dict):
         physics_status = physics_res.get("status", "COLLAPSE")
@@ -1139,6 +1169,10 @@ async def update_structure_realtime(session_id: str, action: Dict[str, Any]):
         "physics_status": physics_status,
         "heatmap": physics_data,
         "affected_elements": affected,
+        "collapsed": {
+            "nodes": collapsed_nodes,
+            "elements": collapsed_elements,
+        },
         "processing_time_ms": int((time.time() - start_time) * 1000),
     }
 
