@@ -143,7 +143,17 @@ class ScaffoldPathfinder:
     """Backward-compatible wrapper over AStarPathfinder for legacy callers."""
 
     def __init__(self, voxel_world, step_h: float = 1.09, step_v: float = 2.07, max_detour: float = 6.0):
-        self._astar = AStarPathfinder(voxel_world, ledger_lengths=[step_h], lift_heights=[step_v], max_iterations=2000)
+        # NOTE(v3.1): even legacy wrapper must navigate using real Layher jumps,
+        # otherwise AutoScaffolder remains artificially constrained to a single
+        # beam length and cannot detour around obstacles in production scenes.
+        ledgers = sorted(set(LAYHER_LEDGERS + [step_h]))
+        lifts = sorted(set(LAYHER_LIFTS + [step_v]))
+        self._astar = AStarPathfinder(
+            voxel_world,
+            ledger_lengths=ledgers,
+            lift_heights=lifts,
+            max_iterations=2000,
+        )
         self.world = voxel_world
 
     def is_direct_possible(self, start: Dict, end: Dict) -> bool:

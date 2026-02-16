@@ -649,7 +649,7 @@ async def ingest_depth_stream(request: DepthStreamRequest):
     return {
         "status": "voxels_updated",
         "added_voxels": added,
-        "total_voxels": len(voxel_world._grid),
+        "total_voxels": voxel_world.total_voxels,
         "message": f"Добавлено {added} вокселей. ИИ видит пространство.",
     }
 
