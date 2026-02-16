@@ -18,6 +18,7 @@ from layher_standards import (
     LayherStandards, 
     BillOfMaterials, 
     RosetteConnection,
+    ComponentType,
     snap_to_layher_grid,
     validate_scaffold_dimensions
 )
@@ -357,27 +358,29 @@ class ScaffoldGenerator:
                     })
                     beam_counter += 1
         
-        # Создаем диагонали (по упрощенной схеме)
-        # В каждой секции добавляем одну диагональ
+        # Создаем диагонали только стандартных длин Layher
         for iz in range(nz):
             for iy in range(ny):
                 for ix in range(nx):
                     # Диагональ от нижнего угла к верхнему противоположному
                     start_id = node_map[(ix, iy, iz)]
                     end_id = node_map[(ix + 1, iy + 1, iz + 1)]
-                    
+
                     diag_length = math.sqrt(
                         ledger_len**2 + ledger_len**2 + stand_len**2
                     )
-                    
-                    beams.append({
-                        "id": f"diag{beam_counter}",
-                        "start": start_id,
-                        "end": end_id,
-                        "type": "diagonal",
-                        "length": float(diag_length)
-                    })
-                    beam_counter += 1
+                    std_diag_length = snap_to_layher_grid(diag_length, "diagonal")
+
+                    # Создаем диагональ только если есть валидная длина из каталога
+                    if LayherStandards.validate_dimensions(ComponentType.DIAGONAL, std_diag_length):
+                        beams.append({
+                            "id": f"diag{beam_counter}",
+                            "start": start_id,
+                            "end": end_id,
+                            "type": "diagonal",
+                            "length": float(std_diag_length)
+                        })
+                        beam_counter += 1
         
         # Создаем BOM (Bill of Materials)
         bom = self._generate_bom(beams)
@@ -428,6 +431,14 @@ class ScaffoldGenerator:
         # TODO: Интеграция с anchors (подгонка узлов к опорным точкам)
         
         return variant
+
+    def _assert_bom_components_exist(self, bom: BillOfMaterials):
+        """Проверяет, что каждый код BOM есть в библиотеке Layher."""
+        missing_codes = [code for code in bom.components if code not in bom.library]
+        if missing_codes:
+            raise AssertionError(
+                "BOM содержит несуществующие артикулы Layher: " + ", ".join(sorted(missing_codes))
+            )
     
     def _estimate_step(self, points: List[Dict]) -> float:
         """
@@ -440,7 +451,7 @@ class ScaffoldGenerator:
             Оптимальный шаг в метрах
         """
         if len(points) < 2:
-            return 2.0  # Дефолтный шаг
+            return LayherStandards.get_nearest_ledger_length(2.07)  # Дефолтный шаг Layher
         
         # Вычисляем среднее расстояние между ближайшими соседями
         distances = []
@@ -465,7 +476,7 @@ class ScaffoldGenerator:
             avg_dist = sum(distances) / len(distances)
             return max(1.0, min(avg_dist, 3.0))  # Ограничиваем 1.0 - 3.0м
         
-        return 2.0
+        return LayherStandards.get_nearest_ledger_length(2.07)
     
     def _generate_bom(self, beams: List[Dict]) -> BillOfMaterials:
         """
@@ -482,7 +493,7 @@ class ScaffoldGenerator:
         # Подсчитываем компоненты по типам
         for beam in beams:
             beam_type = beam.get('type', 'ledger')
-            length = beam.get('length', 2.0)
+            length = beam.get('length', 2.07)
             
             # Определяем код компонента
             if beam_type == 'standard':
@@ -504,6 +515,7 @@ class ScaffoldGenerator:
             
             bom.add_component(code, quantity=1)
         
+        self._assert_bom_components_exist(bom)
         return bom
 
 
