@@ -11,7 +11,7 @@ Fixed Scaffold Builder - Генератор с правильными станд
 """
 import numpy as np
 import math
-from typing import List, Dict, Tuple, Optional, Set
+from typing import List, Dict, Tuple, Optional, Set, Any
 import copy
 
 from layher_standards import (
@@ -23,6 +23,13 @@ from layher_standards import (
     validate_scaffold_dimensions
 )
 from collision_solver import CollisionSolver, Obstacle, create_obstacle_from_detection
+
+try:
+    from modules.voxel_world import VoxelWorld
+    from modules.astar_pathfinder import ScaffoldPathfinder
+    PATHFINDER_AVAILABLE = True
+except ImportError:
+    PATHFINDER_AVAILABLE = False
 
 
 class ScaffoldGenerator:
@@ -62,7 +69,28 @@ class ScaffoldGenerator:
         ]
         
         self.collision_solver = CollisionSolver(clearance=0.15)
+        self._voxel_world: Optional[Any] = None
+        self._pathfinder: Optional[Any] = None
         
+
+    def set_voxel_world(self, voxel_world: 'VoxelWorld') -> None:
+        """Подключить воксельную карту из сессии перед генерацией."""
+        self._voxel_world = voxel_world
+        if PATHFINDER_AVAILABLE:
+            self._pathfinder = ScaffoldPathfinder(voxel_world)
+
+    def _check_beam_path(self, start: Dict, end: Dict) -> bool:
+        """Проверка пути балки через VoxelWorld."""
+        if self._voxel_world is None:
+            return True
+        return not self._voxel_world.is_blocked(start, end)
+
+    def _route_beam(self, start: Dict, end: Dict) -> List[Dict]:
+        """Маршрут балки с обходом препятствий."""
+        if self._pathfinder is None:
+            return [start, end]
+        return self._pathfinder.find_path(start, end)
+
     # ═══════════════════════════════════════════════════════════════════════
     # ПУБЛИЧНЫЕ МЕТОДЫ
     # ═══════════════════════════════════════════════════════════════════════
@@ -131,7 +159,8 @@ class ScaffoldGenerator:
     def generate_smart_options(self, user_points: List[Dict],
                               ai_points: List[Dict],
                               bounds: Dict,
-                              obstacles: Optional[List[Dict]] = None) -> List[Dict]:
+                              obstacles: Optional[List[Dict]] = None,
+                              voxel_world: Optional[Any] = None) -> List[Dict]:
         """
         Умная генерация с учетом точек пользователя и AI детекций.
         
@@ -149,6 +178,9 @@ class ScaffoldGenerator:
         Returns:
             3 варианта с правильными размерами
         """
+        if voxel_world is not None and PATHFINDER_AVAILABLE:
+            self.set_voxel_world(voxel_world)
+
         # Приводим габариты к стандартам
         W = snap_to_layher_grid(max(float(bounds.get("w", 4.0)), 1.0), "ledger")
         H = snap_to_layher_grid(max(float(bounds.get("h", 3.0)), 1.0), "standard")
@@ -428,8 +460,16 @@ class ScaffoldGenerator:
             obstacles
         )
         
-        # TODO: Интеграция с anchors (подгонка узлов к опорным точкам)
-        
+        node_lookup = {node["id"]: node for node in variant.get("nodes", [])}
+        for beam in variant.get("beams", []):
+            start = node_lookup.get(beam.get("start"))
+            end = node_lookup.get(beam.get("end"))
+            if not start or not end:
+                continue
+            beam["path_clear"] = self._check_beam_path(start, end)
+            if not beam["path_clear"]:
+                beam["route"] = self._route_beam(start, end)
+
         return variant
 
     def _assert_bom_components_exist(self, bom: BillOfMaterials):

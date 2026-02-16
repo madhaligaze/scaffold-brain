@@ -10,7 +10,7 @@ Main FastAPI Server - AI Brain Backend
 ✓ BuilderFixed - генератор с валидацией
 ✓ SessionManager - контекст всей сцены
 """
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
@@ -37,6 +37,17 @@ from session_manager import (
     CameraFrame, 
     session_manager
 )
+
+# ── Новые модули v3.0 ───────────────────────────────────────────────────────
+try:
+    from modules.voxel_world import VoxelWorld
+    from modules.astar_pathfinder import ScaffoldPathfinder
+    from modules.structural_graph import StructuralGraph
+    from modules.auto_scaffolder import AutoScaffolder
+
+    BRAIN_V3_AVAILABLE = True
+except ImportError:
+    BRAIN_V3_AVAILABLE = False
 
 # ═══════════════════════════════════════════════════════════════════════════
 # FASTAPI APP
@@ -125,6 +136,42 @@ class ExportBOMRequest(BaseModel):
     """Запрос на экспорт спецификации"""
     session_id: str
     variant_index: int
+
+
+# ─── v3.0 Models ────────────────────────────────────────────────────────────
+
+class DepthStreamRequest(BaseModel):
+    """Стриминг карты глубины с ARCore Depth API"""
+
+    session_id: str
+    depth_base64: str
+    width: int
+    height: int
+    fx: float = 500.0
+    fy: float = 500.0
+    cx_px: float = 320.0
+    cy_px: float = 240.0
+    camera_pose: List[float] = [0, 0, 0, 0, 0, 0, 1]
+
+
+class StructureModifyRequest(BaseModel):
+    """Интерактивное изменение конструкции (удалить/добавить элемент)"""
+
+    session_id: str
+    action: str
+    element_id: Optional[str] = None
+    element_data: Optional[Dict] = None
+
+
+class AutoScaffoldRequest(BaseModel):
+    """Автоматическая сборка от целевой точки"""
+
+    session_id: str
+    target: Point3D
+    clearance_box: Optional[Dict] = None
+    floor_z: float = 0.0
+    ledger_len: float = 1.09
+    standard_h: float = 2.07
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -263,7 +310,8 @@ async def generate_variants(request: GenerateRequest):
             user_points=user_points,
             ai_points=ai_points,
             bounds={"w": target_w, "h": target_h, "d": target_d},
-            obstacles=session.scene_context.obstacles
+            obstacles=session.scene_context.obstacles,
+            voxel_world=session.scene_context.voxel_world,
         )
         
         # Оптимизация каждого варианта (если включено)
@@ -491,6 +539,224 @@ async def get_standards_info():
     }
 
 
+@app.post("/session/depth_stream")
+async def ingest_depth_stream(request: DepthStreamRequest):
+    if not BRAIN_V3_AVAILABLE:
+        raise HTTPException(503, "VoxelWorld модуль не установлен (Brain v3.0)")
+
+    session = session_manager.get_session(request.session_id)
+    if not session:
+        raise HTTPException(404, "Сессия не найдена")
+
+    try:
+        depth_bytes = base64.b64decode(request.depth_base64)
+    except Exception as exc:
+        raise HTTPException(400, "Ошибка декодирования depth_base64") from exc
+
+    voxel_world = session.scene_context.ensure_voxel_world()
+    added = voxel_world.ingest_depth_map(
+        depth_bytes=depth_bytes,
+        width=request.width,
+        height=request.height,
+        fx=request.fx,
+        fy=request.fy,
+        cx_px=request.cx_px,
+        cy_px=request.cy_px,
+        camera_pose=request.camera_pose,
+    )
+
+    return {
+        "status": "voxels_updated",
+        "added_voxels": added,
+        "total_voxels": len(voxel_world._grid),
+        "message": f"Добавлено {added} вокселей. ИИ видит пространство.",
+    }
+
+
+@app.get("/session/{session_id}/voxel_map")
+async def get_voxel_map(session_id: str):
+    if not BRAIN_V3_AVAILABLE:
+        return {"voxels": [], "resolution": 0.1, "available": False}
+
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Сессия не найдена")
+
+    vw = session.scene_context.voxel_world
+    if vw is None:
+        return {"voxels": [], "resolution": 0.1, "message": "Depth map ещё не загружен"}
+
+    return vw.to_ar_mesh()
+
+
+@app.post("/generate/auto")
+async def generate_auto_scaffold(request: AutoScaffoldRequest):
+    if not BRAIN_V3_AVAILABLE:
+        raise HTTPException(503, "AutoScaffolder модуль не установлен (Brain v3.0)")
+
+    session = session_manager.get_session(request.session_id)
+    if not session:
+        raise HTTPException(404, "Сессия не найдена")
+
+    voxel_world = session.scene_context.ensure_voxel_world()
+
+    all_detections = session.scene_context.all_detected_objects
+    if all_detections:
+        voxel_world.ingest_yolo_detections(all_detections)
+
+    target_dict = {"x": request.target.x, "y": request.target.y, "z": request.target.z}
+
+    scaffolder = AutoScaffolder(
+        voxel_world=voxel_world,
+        ledger_len=request.ledger_len,
+        standard_h=request.standard_h,
+    )
+
+    try:
+        variant = scaffolder.build_to_target(
+            target=target_dict,
+            clearance_box=request.clearance_box,
+            floor_z=request.floor_z,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    analysis = physics_brain.calculate_load_map(variant["nodes"], variant["beams"])
+    variant["physics_analysis"] = {
+        "status": analysis.status,
+        "max_load_ratio": analysis.max_load_ratio,
+        "critical_beams": analysis.critical_beams,
+    }
+
+    graph = session.ensure_structural_graph()
+    graph.load_from_variant(variant)
+    session.add_variant(variant)
+
+    blocked_count = sum(1 for b in variant["beams"] if b.get("blocked"))
+
+    return {
+        "status": "success",
+        "variant": variant,
+        "graph_summary": graph.get_summary(),
+        "blocked_beams": blocked_count,
+        "message": (
+            f"Башня {variant['floors']} ярусов построена. "
+            f"Препятствий обойдено: {blocked_count}. "
+            f"Статус физики: {analysis.status}"
+        ),
+    }
+
+
+@app.post("/structure/modify")
+async def modify_structure(request: StructureModifyRequest):
+    session = session_manager.get_session(request.session_id)
+    if not session:
+        raise HTTPException(404, "Сессия не найдена")
+
+    if not BRAIN_V3_AVAILABLE:
+        raise HTTPException(503, "StructuralGraph модуль не установлен")
+
+    graph = session.ensure_structural_graph()
+
+    if not graph.get_beams() and session.generated_variants:
+        graph.load_from_variant(session.generated_variants[-1])
+
+    t_start = time.time()
+
+    if request.action == "REMOVE":
+        if not request.element_id:
+            raise HTTPException(400, "element_id обязателен для REMOVE")
+        result = graph.remove_element(request.element_id)
+    elif request.action == "ADD":
+        if not request.element_data:
+            raise HTTPException(400, "element_data обязателен для ADD")
+        result = graph.add_beam(request.element_data)
+    else:
+        raise HTTPException(400, f"Неизвестный action: {request.action}")
+
+    elapsed_ms = (time.time() - t_start) * 1000
+
+    full_analysis = None
+    if not result.get("is_stable") and session.generated_variants:
+        try:
+            full_analysis = physics_brain.calculate_load_map(graph.get_nodes(), graph.get_beams())
+        except Exception:
+            pass
+
+    return {
+        "status": "UPDATED",
+        "action": request.action,
+        "element_id": request.element_id,
+        "heatmap": result.get("heatmap", []),
+        "is_stable": result.get("is_stable", True),
+        "affected": result.get("affected", []),
+        "elapsed_ms": round(elapsed_ms, 1),
+        "full_analysis": {
+            "status": full_analysis.status,
+            "max_load_ratio": full_analysis.max_load_ratio,
+        }
+        if full_analysis
+        else None,
+        "animation_hint": "COLLAPSE" if not result.get("is_stable") else "UPDATE",
+        "message": (
+            "⚠️ КОНСТРУКЦИЯ НЕСТАБИЛЬНА — добавьте диагонали!"
+            if not result.get("is_stable")
+            else f"Обновлено за {elapsed_ms:.0f} мс"
+        ),
+    }
+
+
+@app.websocket("/ws/{session_id}")
+async def websocket_structure(websocket: WebSocket, session_id: str):
+    await websocket.accept()
+
+    session = session_manager.get_session(session_id)
+    if not session:
+        await websocket.send_json({"type": "ERROR", "message": "Сессия не найдена"})
+        await websocket.close()
+        return
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            action = data.get("action", "")
+
+            if action == "PING":
+                await websocket.send_json({"type": "PONG"})
+                continue
+
+            if action in ("REMOVE", "ADD") and BRAIN_V3_AVAILABLE:
+                graph = session.ensure_structural_graph()
+                if not graph.get_beams() and session.generated_variants:
+                    graph.load_from_variant(session.generated_variants[-1])
+
+                if action == "REMOVE":
+                    result = graph.remove_element(data.get("element_id", ""))
+                else:
+                    result = graph.add_beam(data.get("element_data", {}))
+
+                await websocket.send_json(
+                    {
+                        "type": "HEATMAP",
+                        "heatmap": result.get("heatmap", []),
+                        "is_stable": result.get("is_stable", True),
+                        "affected": result.get("affected", []),
+                        "animation": "COLLAPSE" if not result.get("is_stable") else "UPDATE",
+                    }
+                )
+                continue
+
+            await websocket.send_json({"type": "ERROR", "message": f"Неизвестный action: {action}"})
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        try:
+            await websocket.send_json({"type": "ERROR", "message": str(exc)})
+        except Exception:
+            pass
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # ERROR HANDLERS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -523,6 +789,9 @@ async def startup_event():
     print(f"✓ Physics Engine: PyNite FEM")
     print(f"✓ Collision Solver: Trimesh integration")
     print(f"✓ Session Manager: Ready")
+    print(f"{'✓' if BRAIN_V3_AVAILABLE else '✗'} Brain v3.0: VoxelWorld + A* + StructuralGraph")
+    if not BRAIN_V3_AVAILABLE:
+        print("  ⚠️  Установите: pip install networkx websockets")
     print("=" * 70)
 
 
