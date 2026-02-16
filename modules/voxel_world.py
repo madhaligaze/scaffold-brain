@@ -156,6 +156,12 @@ class VoxelWorld:
             depth_bytes:  raw bytes uint16 little-endian
             camera_pose:  [tx, ty, tz, qx, qy, qz, qw]
         """
+        if width <= 0 or height <= 0 or fx <= 0 or fy <= 0:
+            return 0
+
+        if len(camera_pose) < 7:
+            return 0
+
         if len(depth_bytes) < width * height * 2:
             return 0
 
@@ -190,6 +196,7 @@ class VoxelWorld:
         self,
         start: Union[Tuple[float, float, float], Dict[str, float]],
         end: Union[Tuple[float, float, float], Dict[str, float]],
+        clearance: float = 0.05,
     ) -> bool:
         """
         Raymarching: проверяет, пересекает ли отрезок start→end занятые воксели.
@@ -214,12 +221,18 @@ class VoxelWorld:
 
         # Шаг = resolution/2 для надёжного обнаружения
         steps = max(int(dist / (self.resolution / 2)), 2)
+        extra = max(0, int(clearance / self.resolution))
 
         for i in range(steps + 1):
             t = i / steps
             p = p1 + (p2 - p1) * t
-            if self._to_grid(*p) in self.occupied:
-                return True
+            vx, vy, vz = self._to_grid(*p)
+            for dx in range(-extra, extra + 1):
+                for dz in range(-extra, extra + 1):
+                    check = (vx + dx, vy, vz + dz)
+                    voxel_type = self._types.get(check, self.FREE)
+                    if voxel_type not in (self.FREE, self.FLOOR):
+                        return True
 
         return False
 
