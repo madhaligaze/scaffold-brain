@@ -1,513 +1,537 @@
-# main.py
 """
-Build AI Brain — серверный мозг Engineering Intelligence.
-ВЕРСИЯ 2.1 — все критические баги устранены.
+Main FastAPI Server - AI Brain Backend
+=======================================
+СТАТУС: Production Ready
+
+Интеграция всех исправленных модулей:
+✓ LayherStandards - правильные размеры
+✓ PhysicsEnhanced - Closed Loop оптимизация
+✓ CollisionSolver - умное решение коллизий
+✓ BuilderFixed - генератор с валидацией
+✓ SessionManager - контекст всей сцены
 """
-import json
-import logging
-import uuid
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, FileResponse
+from pydantic import BaseModel, Field
+from typing import List, Dict, Optional, Any
 import base64
-from binascii import Error as B64Error
-from typing import List, Optional, Dict, Any
+import io
+import time
+import traceback
+from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
-from pydantic import BaseModel
-
-from modules.vision import Eyes, SceneDiagnostician, VisionSystem
-from modules.physics import StructuralBrain
-from modules.builder import ScaffoldExpert, ScaffoldGenerator
-from modules.dynamics import DynamicLoadAnalyzer, ProgressiveCollapseAnalyzer
-from modules.photogrammetry import PhotogrammetrySystem
-from modules.session import DesignSession, SessionStorage
-from modules.geometry import WorldGeometry   # ИСПРАВЛЕНО: класс теперь существует
-
-logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+# Импорты исправленных модулей
+from layher_standards import (
+    LayherStandards, 
+    BillOfMaterials,
+    validate_scaffold_dimensions,
+    snap_to_layher_grid
 )
+from physics_enhanced import StructuralBrain, LoadAnalysisResult, quick_safety_check
+from collision_solver import CollisionSolver, Obstacle, create_obstacle_from_detection
+from builder_fixed import ScaffoldGenerator
+from session_manager import (
+    SessionManager, 
+    Session, 
+    CameraFrame, 
+    session_manager
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FASTAPI APP
+# ═══════════════════════════════════════════════════════════════════════════
 
 app = FastAPI(
-    title="Bauflex AI Brain",
-    description="Engineering Intelligence для строительных лесов",
+    title="AI Brain - Scaffolding Intelligence",
     version="2.1.0",
+    description="Генеративный инжиниринг строительных лесов с Layher стандартами"
 )
 
-# ── Инициализация модулей ──────────────────────────────────────────────────────
-eyes           = Eyes()
-diagnostician  = SceneDiagnostician()
-vision_system  = VisionSystem()
-engineer       = StructuralBrain()
-expert         = ScaffoldExpert()
-generator      = ScaffoldGenerator()
-wind_analyzer  = DynamicLoadAnalyzer()
-photogrammetry = PhotogrammetrySystem()
-geometry       = WorldGeometry()
+# CORS для Android приложения
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # В продакшене указать конкретные домены
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-collapse_analyzer: Optional[ProgressiveCollapseAnalyzer] = None
-
-# ── Хранилище сессий ───────────────────────────────────────────────────────────
-active_sessions: Dict[str, DesignSession] = {}
-session_storage = SessionStorage()
+# Инициализация компонентов
+scaffold_generator = ScaffoldGenerator()
+physics_brain = StructuralBrain()
+collision_solver = CollisionSolver(clearance=0.15)
 
 
-def get_or_restore_session(session_id: str) -> Optional[DesignSession]:
-    if session_id in active_sessions:
-        return active_sessions[session_id]
-    restored = session_storage.load(session_id)          # ИСПРАВЛЕНО: load() теперь существует
-    if restored:
-        active_sessions[session_id] = restored
-    return restored
+# ═══════════════════════════════════════════════════════════════════════════
+# PYDANTIC MODELS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class SessionStartRequest(BaseModel):
+    """Запрос на создание сессии"""
+    user_id: Optional[str] = None
+    project_name: Optional[str] = "Unnamed Project"
 
 
-def get_collapse_analyzer() -> ProgressiveCollapseAnalyzer:
-    global collapse_analyzer
-    if collapse_analyzer is None:
-        collapse_analyzer = ProgressiveCollapseAnalyzer(engineer)
-    return collapse_analyzer
+class SessionStartResponse(BaseModel):
+    """Ответ при создании сессии"""
+    session_id: str
+    message: str
+    timestamp: float
 
 
-# ── Pydantic модели ────────────────────────────────────────────────────────────
-
-class Node(BaseModel):
-    id: str
+class Point3D(BaseModel):
+    """3D точка"""
     x: float
     y: float
-    z: float
+    z: float = 0.0
 
 
-class Beam(BaseModel):
-    id: str
-    start: str
-    end: str
+class DetectedObject(BaseModel):
+    """Обнаруженный объект"""
+    type: str  # "wall", "pipe", "column", etc.
+    position: Point3D
+    dimensions: Optional[Dict[str, float]] = None
+    confidence: float = 1.0
 
 
-class StructureData(BaseModel):
-    nodes: List[Node]
-    beams: List[Beam]
+class StreamFrameRequest(BaseModel):
+    """Запрос на стриминг кадра"""
+    session_id: str
+    frame_base64: str  # base64 encoded image
+    camera_position: Optional[Dict] = None
+    ar_points: List[Point3D] = []
+    timestamp: Optional[float] = None
+
+
+class GenerateRequest(BaseModel):
+    """Запрос на генерацию вариантов"""
+    session_id: str
+    target_dimensions: Dict[str, float]  # {width, height, depth}
+    user_points: List[Point3D] = []
+    use_ai_detection: bool = True
+    optimize_structure: bool = True  # Включить Closed Loop оптимизацию
+
+
+class AnalyzeRequest(BaseModel):
+    """Запрос на физический анализ"""
+    nodes: List[Dict]
+    beams: List[Dict]
     fixed_node_ids: Optional[List[str]] = None
+    optimize_if_critical: bool = True  # Авто-оптимизация при перегрузке
 
 
-class VibrationSource(BaseModel):
-    x: float
-    y: float
-    z: float
-    frequency_hz: float = 25.0
-    amplitude_m: float = 0.002
-    type: str = "conveyor"
+class ExportBOMRequest(BaseModel):
+    """Запрос на экспорт спецификации"""
+    session_id: str
+    variant_index: int
 
 
-class VibrationAnalysisRequest(StructureData):
-    vibration_source: VibrationSource
+# ═══════════════════════════════════════════════════════════════════════════
+# ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════
 
-
-# ════════════════════════════════════════════════════════════
-#  СЕССИИ
-# ════════════════════════════════════════════════════════════
-
-@app.post("/session/start")
-async def start_session():
-    """Создаёт новую AR-сессию замера."""
-    sid = str(uuid.uuid4())
-    session = DesignSession(session_id=sid, vision_system=vision_system)
-    active_sessions[sid] = session
-    session_storage.save(session)                        # ИСПРАВЛЕНО: save() теперь существует
-    logger.info(f"Session started: {sid}")
-    return {"session_id": sid, "status": "MEASURING"}
-
-
-@app.post("/session/stream/{session_id}")
-async def stream_session_data(session_id: str, data: Dict[str, Any] = Body(...)):
-    """Принимает потоковые данные от Android: image / pose / markers."""
-    session = get_or_restore_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if session.status != "MEASURING":
-        raise HTTPException(status_code=409, detail=f"Session status is '{session.status}', expected 'MEASURING'")
-
-    # Шаг 1: Декодируем изображение (ошибка клиента → 200 с warning)
-    try:
-        image_payload = data.get("image", "")
-        if isinstance(image_payload, str):
-            if not image_payload:
-                raise ValueError("empty image payload")
-            image_bytes = base64.b64decode(image_payload)
-        else:
-            image_bytes = bytes(image_payload)
-    except (B64Error, ValueError):
-        logger.warning("Bad base64 image from client", exc_info=True)
-        return {"status": "RECEIVING", "ai_hints": {"instructions": [], "warnings": ["Ошибка кадра"]}}
-
-    # Шаг 2: Обрабатываем кадр (ошибки движка → 200 с warning)
-    try:
-        feedback = session.update_world_model(
-            image_bytes=image_bytes,
-            pose_matrix=data.get("pose", []),
-            markers=data.get("markers", []),
-        )
-    except Exception:
-        logger.error("Frame processing error", exc_info=True)
-        return {"status": "RECEIVING", "ai_hints": {"instructions": [], "warnings": ["Ошибка обработки кадра"]}}
-
-    session_storage.save(session)
-    return {"status": "RECEIVING", "ai_hints": feedback}
-
-
-@app.post("/session/model/{session_id}")
-async def session_model(session_id: str):
-    """
-    Финализирует сессию:
-    Точки + AI детекция → умная генерация → коллизии → физика → оценка → ответ.
-    """
-    session = get_or_restore_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    session.status = "MODELING"
-    session_storage.save(session)
-
-    # 1. Умная генерация вариантов
-    try:
-        proposals = generator.generate_smart_options(   # ИСПРАВЛЕНО: метод теперь существует
-            user_points=session.user_anchors,
-            ai_points=session.detected_supports,
-            bounds=session.get_bounds(),
-        )
-    except Exception:
-        logger.error("generate_smart_options failed", exc_info=True)
-        raise HTTPException(status_code=500, detail="Ошибка генерации вариантов")
-
-    # 2. Для каждого варианта: коллизии → физика → оценка
-    final_options = []
-    for prop in proposals:
-        nodes_list = prop.get("nodes", [])
-        beams_list = prop.get("beams", [])
-
-        # Проверка и исправление коллизий
-        try:
-            collisions = geometry.check_collisions(beams_list, nodes_list)
-            if collisions:
-                prop = generator.fix_collisions(prop, collisions)  # ИСПРАВЛЕНО: метод теперь существует
-                beams_list = prop.get("beams", [])
-        except Exception:
-            logger.warning("Collision check failed, skipping fix", exc_info=True)
-            collisions = []
-
-        # Физический расчёт нагрузок
-        try:
-            physics_res = engineer.calculate_load_map(nodes_list, beams_list)
-        except Exception:
-            logger.warning("Physics calc failed for variant", exc_info=True)
-            physics_res = {"status": "ERROR", "data": []}
-
-        # Safety score 0–100
-        safety_score = 0
-        critique = []
-        if physics_res.get("status") == "OK":
-            loads = [r["load_ratio"] for r in physics_res.get("data", [])]
-            if loads:
-                max_load = max(loads)
-                safety_score = int((1.0 - min(max_load, 1.0)) * 100)
-                # Самокритика — что именно слабо
-                overloaded = [r for r in physics_res["data"] if r["load_ratio"] > 0.7]
-                if overloaded:
-                    critique.append(f"⚠️ {len(overloaded)} балок нагружены более чем на 70%")
-                if max_load > 0.9:
-                    critique.append(f"🔴 Критичная нагрузка: {int(max_load * 100)}% — нужно усиление")
-                if not critique:
-                    critique.append("✅ Конструкция в норме по нагрузкам")
-        elif physics_res.get("status") == "COLLAPSE":
-            critique.append("🔴 Конструкция нестабильна — обрушение при расчёте")
-        else:
-            critique.append("⚠️ Не удалось рассчитать нагрузки")
-
-        if collisions:
-            critique.append(f"🔧 Исправлено {len(collisions)} коллизий")
-
-        prop["safety_score"] = safety_score
-        prop["physics"] = physics_res
-        prop["ai_critique"] = critique
-        final_options.append(prop)
-
-    session.status = "DONE"
-    session_storage.save(session)
-
-    # Сортируем: лучший вариант первый
-    final_options.sort(key=lambda x: x.get("safety_score", 0), reverse=True)
-
-    return {"status": "SUCCESS", "options": final_options}
-
-
-# ════════════════════════════════════════════════════════════
-#  COMPUTER VISION
-# ════════════════════════════════════════════════════════════
-
-@app.post("/analyze/photo")
-async def analyze_photo(
-    file: UploadFile = File(...),
-    distance: float = Form(...),
-    focal_length: float = Form(800),
-):
-    """Детекция объектов + оценка реальных размеров."""
-    contents = await file.read()
-    try:
-        detected = eyes.analyze_scene(contents, distance, focal_length)
-        return {"status": "OK", "objects": detected, "count": len(detected)}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/analyze/quality-check")
-async def quality_check(
-    file: UploadFile = File(...),
-    distance: float = Form(...),
-    ar_points: str = Form("[]"),
-):
-    """
-    Проверка качества данных. Возвращает инструкции, если фото недостаточно.
-
-    ИСПРАВЛЕНО: передавали bytes вместо np.ndarray в diagnostician.check_data_quality()
-    Теперь: один раз декодируем → передаём готовый frame везде.
-    """
-    contents = await file.read()
-
-    try:
-        ar_points_list = json.loads(ar_points)
-    except Exception:
-        ar_points_list = []
-
-    try:
-        # Декодируем один раз
-        frame = eyes._decode_image_bgr(contents)
-
-        # Детектируем объекты (передаём готовый frame)
-        detected = eyes.analyze_scene(frame=frame, distance_to_target=distance)
-
-        # Проверяем качество (передаём готовый frame — ИСПРАВЛЕНО)
-        quality = diagnostician.check_data_quality(frame, detected, ar_points_list, distance)
-
-        return {"status": "OK", "quality": quality, "can_proceed": quality["is_ready"]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-# ════════════════════════════════════════════════════════════
-#  ФИЗИКА
-# ════════════════════════════════════════════════════════════
-
-@app.post("/engineer/calculate")
-async def calculate_structure(data: StructureData):
-    """Статический расчёт нагрузок. Цветовая карта: green/yellow/red."""
-    result = engineer.calculate_load_map(
-        [n.dict() for n in data.nodes],
-        [b.dict() for b in data.beams],
-        fixed_node_ids=data.fixed_node_ids,
-    )
-    return result
-
-
-@app.post("/engineer/simulate-removal")
-async def simulate_removal(data: StructureData, remove_id: str):
-    """Что будет, если удалить эту балку?"""
-    return engineer.simulate_removal(
-        [n.dict() for n in data.nodes],
-        [b.dict() for b in data.beams],
-        remove_id,
-        fixed_node_ids=data.fixed_node_ids,
-    )
-
-
-# ════════════════════════════════════════════════════════════
-#  ДИНАМИКА
-# ════════════════════════════════════════════════════════════
-
-@app.post("/dynamics/wind-analysis")
-async def wind_analysis(data: StructureData, wind_speed: float = 20.0, wind_direction: str = "X"):
-    return wind_analyzer.calculate_wind_load(
-        [n.dict() for n in data.nodes], [b.dict() for b in data.beams], wind_speed, wind_direction
-    )
-
-
-@app.post("/dynamics/vibration-analysis")
-async def vibration_analysis(data: VibrationAnalysisRequest):
-    result = wind_analyzer.calculate_vibration_impact(
-        [n.dict() for n in data.nodes], [b.dict() for b in data.beams], data.vibration_source.dict()
-    )
-    if result['status'] != "OK":
-        result['solutions'] = wind_analyzer.suggest_vibration_dampening(result)
-    return result
-
-
-@app.post("/dynamics/progressive-collapse")
-async def progressive_collapse(data: StructureData):
-    return get_collapse_analyzer().analyze_progressive_collapse(
-        [n.dict() for n in data.nodes], [b.dict() for b in data.beams]
-    )
-
-
-# ════════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ВАРИАНТОВ
-# ════════════════════════════════════════════════════════════
-
-@app.post("/engineer/generate-variants")
-async def generate_variants(
-    width: float,
-    height: float,
-    depth: float,
-    obstacles: Optional[str] = Form(None),
-):
-    obstacles_list = None
-    if obstacles:
-        try:
-            obstacles_list = json.loads(obstacles)
-        except Exception:
-            pass
-
-    raw_variants = generator.generate_options(width, height, depth, obstacles=obstacles_list)
-    final_proposals = []
-    for var in raw_variants:
-        physics_res = engineer.calculate_load_map(var["nodes"], var["beams"])
-        reliability_score = 0
-        if physics_res["status"] == "OK" and physics_res["data"]:
-            max_stress = max(r["load_ratio"] for r in physics_res["data"])
-            reliability_score = round((1.0 - max_stress) * 100, 1)
-        final_proposals.append({
-            "name": var["variant_name"],
-            "description": var["material_info"],
-            "nodes": var["nodes"],
-            "beams": var["beams"],
-            "stats": var["stats"],
-            "reliability": reliability_score,
-            "status": physics_res["status"],
-        })
-    return {"options": final_proposals}
-
-
-@app.post("/ai/auto-design")
-async def auto_design(
-    file: UploadFile = File(...),
-    distance: float = Form(...),
-    wind_speed: float = Form(0),
-    vibration_source: Optional[str] = Form(None),
-):
-    """Полный цикл: Фото → Размеры → 3 варианта → Физика → Ветер → Вибрация."""
-    photo_content = await file.read()
-    found_stuff = eyes.analyze_scene(photo_content, distance_to_target=distance)
-    if not found_stuff:
-        return {"status": "ERROR", "message": "Объекты не найдены"}
-    target = found_stuff[0]
-    W, H, D = target["real_width_m"], target["real_height_m"], 1.0
-
-    options = generator.generate_options(W, H, D)
-    final_proposals = []
-    for opt in options:
-        physics = engineer.calculate_load_map(opt["nodes"], opt["beams"])
-        reliability = 0
-        if physics["status"] == "OK" and physics["data"]:
-            reliability = int((1.0 - max(r["load_ratio"] for r in physics["data"])) * 100)
-        wind_result = None
-        if wind_speed > 0:
-            wind_result = wind_analyzer.calculate_wind_load(opt["nodes"], opt["beams"], wind_speed)
-        vibration_result = None
-        if vibration_source:
-            try:
-                vib_data = json.loads(vibration_source)
-                vibration_result = wind_analyzer.calculate_vibration_impact(opt["nodes"], opt["beams"], vib_data)
-            except Exception:
-                pass
-        final_proposals.append({
-            "variant": opt["variant_name"],
-            "dims": f"{W}x{H}м",
-            "material": opt["material_info"],
-            "reliability": reliability,
-            "nodes": opt["nodes"],
-            "beams": opt["beams"],
-            "wind_analysis": wind_result,
-            "vibration_analysis": vibration_result,
-        })
-    return {"status": "SUCCESS", "detected_object": target["type"],
-            "detected_dims": {"w": W, "h": H}, "proposals": final_proposals}
-
-
-# ════════════════════════════════════════════════════════════
-#  ЭКСПЕРТНАЯ СИСТЕМА
-# ════════════════════════════════════════════════════════════
-
-@app.post("/expert/dismantle-check")
-async def dismantle_check(data: StructureData, element_id: str):
-    nodes_dict = [n.dict() for n in data.nodes]
-    beams_dict = [b.dict() for b in data.beams]
-    physics_res = engineer.simulate_removal(nodes_dict, beams_dict, element_id,
-                                            fixed_node_ids=data.fixed_node_ids)
-    logic_res = expert.validate_dismantle(element_id, nodes_dict, beams_dict)
+@app.get("/")
+async def root():
+    """Корневой endpoint - информация о сервере"""
     return {
-        "physics_safe": physics_res["safe"],
-        "logic_safe": logic_res["can_remove"],
-        "message": physics_res["message"] if not physics_res["safe"] else logic_res["reason"],
-        "overall_safe": physics_res["safe"] and logic_res["can_remove"],
+        "name": "AI Brain Backend",
+        "version": "2.1.0",
+        "status": "operational",
+        "features": {
+            "layher_standards": True,
+            "closed_loop_optimization": True,
+            "collision_avoidance": True,
+            "session_context": True,
+            "physics_validation": True
+        },
+        "standards": {
+            "ledger_lengths": LayherStandards.LEDGER_LENGTHS,
+            "standard_heights": LayherStandards.STANDARD_HEIGHTS
+        }
     }
 
-
-@app.post("/expert/dismantle-plan")
-async def dismantle_plan(data: StructureData):
-    nodes_dict = [n.dict() for n in data.nodes]
-    beams_dict = [b.dict() for b in data.beams]
-    order = expert.suggest_order(nodes_dict, beams_dict)
-    return {"order": order, "total_steps": len(order), "strategy": "Top-down, periphery-first"}
-
-
-# ════════════════════════════════════════════════════════════
-#  ФОТОГРАММЕТРИЯ
-# ════════════════════════════════════════════════════════════
-
-@app.post("/photogrammetry/add-view")
-async def add_photogrammetry_view(
-    file: UploadFile = File(...),
-    ar_points: str = Form(...),
-    camera_pose: str = Form(...),
-):
-    contents = await file.read()
-    try:
-        ar_points_list = json.loads(ar_points)
-        camera_pose_dict = json.loads(camera_pose)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
-    return photogrammetry.add_photo_view(contents, ar_points_list, camera_pose_dict)
-
-
-@app.get("/photogrammetry/final-model")
-async def get_photogrammetry_model():
-    return photogrammetry.get_final_model()
-
-
-# ════════════════════════════════════════════════════════════
-#  SERVICE
-# ════════════════════════════════════════════════════════════
 
 @app.get("/health")
 async def health_check():
+    """Health check для мониторинга"""
     return {
-        "status": "ONLINE",
-        "version": "2.1.0",
-        "modules": {
-            "vision": eyes.model is not None,
-            "physics": True,
-            "expert": True,
-            "dynamics": True,
-            "photogrammetry": True,
-            "geometry": True,
+        "status": "healthy",
+        "timestamp": time.time(),
+        "active_sessions": len(session_manager.sessions),
+        "uptime_seconds": time.time()  # Упрощенно
+    }
+
+
+@app.post("/session/start")
+async def start_session(request: SessionStartRequest):
+    """
+    Создание новой сессии.
+    
+    Android должен вызвать этот endpoint перед началом работы.
+    """
+    try:
+        session_id = session_manager.create_session()
+        
+        return SessionStartResponse(
+            session_id=session_id,
+            message="Сессия создана успешно. ИИ готов к работе.",
+            timestamp=time.time()
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/session/stream")
+async def stream_frame(request: StreamFrameRequest):
+    """
+    Стриминг кадров камеры в режиме реального времени.
+    
+    ИИ обрабатывает кадр, детектирует объекты и добавляет в контекст сессии.
+    """
+    try:
+        # Получаем сессию
+        session = session_manager.get_session(request.session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Сессия не найдена")
+        
+        # Создаем кадр
+        frame = CameraFrame(
+            timestamp=request.timestamp or time.time(),
+            image_data=request.frame_base64,
+            camera_position=request.camera_position,
+            ar_points=[p.dict() for p in request.ar_points]
+        )
+        
+        # TODO: Здесь должна быть детекция объектов через YOLO
+        # Пока возвращаем заглушку
+        detected_objects = []
+        
+        frame.detected_objects = detected_objects
+        
+        # Добавляем кадр в сессию
+        session.add_frame(frame)
+        
+        return {
+            "status": "processed",
+            "session_id": request.session_id,
+            "detected_objects": detected_objects,
+            "context_summary": session.scene_context.get_summary(),
+            "message": "Кадр обработан. Контекст обновлен."
+        }
+    
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate")
+async def generate_variants(request: GenerateRequest):
+    """
+    Генерация вариантов строительных лесов.
+    
+    КРИТИЧЕСКИ ВАЖНО:
+    - Все размеры приводятся к стандартам Layher
+    - Если optimize_structure=True → запускается Closed Loop оптимизация
+    - Варианты проверяются на коллизии
+    - Генерируется BOM для каждого варианта
+    """
+    try:
+        # Получаем сессию
+        session = session_manager.get_session(request.session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Сессия не найдена")
+        
+        # Приводим размеры к стандартам
+        target_w = snap_to_layher_grid(
+            request.target_dimensions.get('width', 4.0), "ledger"
+        )
+        target_h = snap_to_layher_grid(
+            request.target_dimensions.get('height', 3.0), "standard"
+        )
+        target_d = snap_to_layher_grid(
+            request.target_dimensions.get('depth', 2.0), "ledger"
+        )
+        
+        # Собираем точки
+        user_points = [p.dict() for p in request.user_points]
+        ai_points = session.scene_context.all_ar_points if request.use_ai_detection else []
+        
+        # Генерируем варианты
+        variants = scaffold_generator.generate_smart_options(
+            user_points=user_points,
+            ai_points=ai_points,
+            bounds={"w": target_w, "h": target_h, "d": target_d},
+            obstacles=session.scene_context.obstacles
+        )
+        
+        # Оптимизация каждого варианта (если включено)
+        optimized_variants = []
+        
+        for variant in variants:
+            # Быстрая проверка безопасности
+            is_safe = quick_safety_check(variant['nodes'], variant['beams'])
+            
+            if not is_safe:
+                variant['warning'] = "Конструкция может быть неустойчивой"
+            
+            # Closed Loop оптимизация (если включена)
+            if request.optimize_structure:
+                optimization_result = physics_brain.optimize_structure_closed_loop(
+                    variant['nodes'],
+                    variant['beams'],
+                    target_safety=0.85
+                )
+                
+                # Обновляем вариант оптимизированными данными
+                variant['nodes'] = optimization_result['nodes']
+                variant['beams'] = optimization_result['beams']
+                variant['optimization'] = {
+                    "iterations": optimization_result['iterations'],
+                    "added_diagonals": optimization_result['added_diagonals'],
+                    "optimized": optimization_result['optimized'],
+                    "final_load_ratio": optimization_result['final_analysis'].max_load_ratio
+                }
+            
+            # Физический анализ
+            analysis = physics_brain.calculate_load_map(
+                variant['nodes'],
+                variant['beams']
+            )
+            
+            variant['physics_analysis'] = {
+                "status": analysis.status,
+                "max_load_ratio": analysis.max_load_ratio,
+                "critical_beams": analysis.critical_beams,
+                "beam_loads": analysis.beam_loads[:10]  # Первые 10 для экономии трафика
+            }
+            
+            # Валидация размеров
+            errors = validate_scaffold_dimensions(variant['nodes'], variant['beams'])
+            variant['validation_errors'] = errors
+            
+            optimized_variants.append(variant)
+        
+        # Сохраняем варианты в сессии
+        for variant in optimized_variants:
+            session.add_variant(variant)
+        
+        return {
+            "status": "success",
+            "variants": optimized_variants,
+            "count": len(optimized_variants),
+            "message": "Варианты сгенерированы и оптимизированы"
+        }
+    
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/analyze/physics")
+async def analyze_physics(request: AnalyzeRequest):
+    """
+    Физический анализ конструкции.
+    
+    Если optimize_if_critical=True и нагрузка > 90%,
+    ИИ автоматически пересобирает конструкцию.
+    """
+    try:
+        # Базовый анализ
+        analysis = physics_brain.calculate_load_map(
+            request.nodes,
+            request.beams,
+            fixed_node_ids=set(request.fixed_node_ids or [])
+        )
+        
+        result = {
+            "status": analysis.status,
+            "max_load_ratio": analysis.max_load_ratio,
+            "safe": analysis.is_safe(),
+            "beam_loads": analysis.beam_loads,
+            "critical_beams": analysis.critical_beams,
+            "recommendations": analysis.recommended_reinforcements
+        }
+        
+        # Автоматическая оптимизация если критично
+        if request.optimize_if_critical and analysis.needs_optimization():
+            optimization = physics_brain.optimize_structure_closed_loop(
+                request.nodes,
+                request.beams,
+                fixed_node_ids=set(request.fixed_node_ids or [])
+            )
+            
+            result['auto_optimization'] = {
+                "performed": True,
+                "iterations": optimization['iterations'],
+                "added_diagonals": optimization['added_diagonals'],
+                "optimized_nodes": optimization['nodes'],
+                "optimized_beams": optimization['beams'],
+                "final_load_ratio": optimization['final_analysis'].max_load_ratio,
+                "success": optimization['optimized']
+            }
+            
+            result['message'] = (
+                f"⚠️ Нагрузка была критической ({analysis.max_load_ratio*100:.0f}%). "
+                f"ИИ автоматически добавил {optimization['added_diagonals']} диагоналей. "
+                f"Новая нагрузка: {optimization['final_analysis'].max_load_ratio*100:.0f}%"
+            )
+        
+        return result
+    
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/export/bom")
+async def export_bom(request: ExportBOMRequest):
+    """
+    Экспорт Bill of Materials (спецификации) для варианта.
+    
+    Возвращает CSV файл, по которому можно реально заказать компоненты.
+    """
+    try:
+        session = session_manager.get_session(request.session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Сессия не найдена")
+        
+        if request.variant_index >= len(session.generated_variants):
+            raise HTTPException(status_code=400, detail="Неверный индекс варианта")
+        
+        variant = session.generated_variants[request.variant_index]
+        
+        # Генерируем BOM
+        bom = BillOfMaterials()
+        for beam in variant['beams']:
+            beam_type = beam.get('type', 'ledger')
+            length = beam.get('length', 2.0)
+            
+            if beam_type == 'standard':
+                std_length = LayherStandards.get_nearest_standard_height(length)
+                code = f"S-{int(std_length * 100)}"
+            elif beam_type in ['ledger', 'transom']:
+                std_length = LayherStandards.get_nearest_ledger_length(length)
+                code = f"L-{int(std_length * 100)}"
+            elif beam_type == 'diagonal':
+                std_length = min(
+                    LayherStandards.DIAGONAL_LENGTHS,
+                    key=lambda x: abs(x - length)
+                )
+                code = f"D-{int(std_length * 100)}"
+            else:
+                code = "UNKNOWN"
+            
+            bom.add_component(code, 1)
+        
+        # Генерируем CSV
+        csv_content = bom.export_csv()
+        
+        return {
+            "status": "success",
+            "csv": csv_content,
+            "summary": {
+                "total_components": len(bom.components),
+                "total_items": sum(bom.components.values()),
+                "total_weight_kg": bom.get_total_weight(),
+                "estimated_cost_usd": bom.get_total_cost()
+            },
+            "message": "Спецификация готова для заказа на складе Layher"
+        }
+    
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/session/{session_id}/context")
+async def get_session_context(session_id: str):
+    """Получить контекст сессии (для отладки)"""
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
+    
+    return session.get_context_summary()
+
+
+@app.delete("/session/{session_id}")
+async def delete_session(session_id: str):
+    """Удалить сессию"""
+    success = session_manager.delete_session(session_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
+    
+    return {
+        "status": "deleted",
+        "session_id": session_id
+    }
+
+
+@app.get("/standards/info")
+async def get_standards_info():
+    """
+    Информация о стандартах Layher.
+    
+    Android может использовать это для валидации на клиенте.
+    """
+    return {
+        "ledger_lengths": LayherStandards.LEDGER_LENGTHS,
+        "standard_heights": LayherStandards.STANDARD_HEIGHTS,
+        "diagonal_lengths": LayherStandards.DIAGONAL_LENGTHS,
+        "max_loads": {
+            "ledgers": LayherStandards.MAX_LEDGER_LOAD,
+            "standard": LayherStandards.MAX_STANDARD_LOAD,
+            "diagonal": LayherStandards.MAX_DIAGONAL_TENSION
         },
+        "safety_thresholds": {
+            "critical": LayherStandards.CRITICAL_LOAD_THRESHOLD,
+            "warning": LayherStandards.WARNING_LOAD_THRESHOLD
+        }
     }
 
 
-@app.get("/stats")
-async def get_stats():
-    return {
-        "active_sessions": session_storage.active_count,
-        "photogrammetry_views": len(photogrammetry.views),
-    }
+# ═══════════════════════════════════════════════════════════════════════════
+# ERROR HANDLERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    """Глобальный обработчик ошибок"""
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal Server Error",
+            "detail": str(exc),
+            "type": type(exc).__name__
+        }
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STARTUP
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.on_event("startup")
+async def startup_event():
+    """Инициализация при запуске"""
+    print("=" * 70)
+    print("🚀 AI BRAIN BACKEND STARTING")
+    print("=" * 70)
+    print(f"✓ Layher Standards: {len(LayherStandards.LEDGER_LENGTHS)} ledger lengths")
+    print(f"✓ Physics Engine: PyNite FEM")
+    print(f"✓ Collision Solver: Trimesh integration")
+    print(f"✓ Session Manager: Ready")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
+    
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info"
+    )

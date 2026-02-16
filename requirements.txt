@@ -1,30 +1,33 @@
-# ── Core Framework ───────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# AI BRAIN BACKEND - DEPENDENCIES
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Web Framework
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
-pydantic==2.6.0
-pydantic-settings==2.2.1   # ИСПРАВЛЕНО: отсутствовал → core/config.py падал с ImportError
-python-multipart==0.0.9
+python-multipart==0.0.6
+pydantic==2.5.3
+pydantic-settings==2.1.0
 
-# ── Computer Vision ───────────────────────────────────────────────────────────
-ultralytics==8.1.0          # YOLOv8
-opencv-python==4.9.0.80
-opencv-contrib-python==4.9.0.80
+# Physics & Math
+pynitefea==2.0.0  # FEM анализ
+numpy==1.26.3
+scipy==1.11.4
+
+# 3D Geometry & Collision Detection
+trimesh==4.0.10
+shapely==2.0.2
+
+# Computer Vision (опционально, если используется YOLO)
+# opencv-python==4.9.0.80
+# ultralytics==8.1.0  # YOLOv8
+
+# Utilities
+python-dotenv==1.0.0
 Pillow==10.2.0
 
-# ── Scientific Computing ──────────────────────────────────────────────────────
-numpy==1.26.3
-scipy==1.12.0
-scikit-learn==1.4.0
-
-# ── Finite Element Analysis ───────────────────────────────────────────────────
-# PyNite (0.0.89) — старый API: from PyNite import FEModel3D
-# pynitefea (2.x)  — новый API: from Pynite import FEModel3D
-# physics.py обрабатывает оба варианта автоматически.
-# Установите одно из двух:
-PyNite==0.0.89
-# pynitefea>=2.0.0
-
-# ── Dev Tools ─────────────────────────────────────────────────────────────────
-pytest==8.0.0
-black==24.1.0
-flake8==7.0.0
+# Development
+pytest==7.4.3
+pytest-asyncio==0.21.1
+black==23.12.1
+ruff==0.1.11
