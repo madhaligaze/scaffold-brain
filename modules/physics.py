@@ -1,4 +1,3 @@
-import copy
 
 try:
     # Актуальная точка входа в pynitefea>=2.x

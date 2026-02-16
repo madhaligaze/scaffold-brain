@@ -9,20 +9,18 @@ Fixed Scaffold Builder - Генератор с правильными станд
 
 Никаких случайных float-значений. Только стандарты Layher.
 """
-import numpy as np
 import math
-from typing import List, Dict, Tuple, Optional, Set, Any
+from typing import List, Dict, Optional, Any
 import copy
 
 from core.layher_standards import (
     LayherStandards, 
     BillOfMaterials, 
-    RosetteConnection,
     ComponentType,
     snap_to_layher_grid,
     validate_scaffold_dimensions
 )
-from core.collision_solver import CollisionSolver, Obstacle, create_obstacle_from_detection
+from core.collision_solver import CollisionSolver, Obstacle
 
 try:
     from modules.voxel_world import VoxelWorld
@@ -587,7 +585,7 @@ if __name__ == "__main__":
         if errors:
             print(f"   ⚠️ Ошибки валидации: {len(errors)}")
         else:
-            print(f"   ✓ Все размеры соответствуют стандартам Layher")
+            print("   ✓ Все размеры соответствуют стандартам Layher")
     
     print("\n2. Проверка коррекции размеров:")
     test_values = [2.0, 2.13, 3.0]

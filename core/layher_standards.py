@@ -6,7 +6,7 @@ Layher Scaffolding Standards Library
 Все размеры в метрах, соответствуют РЕАЛЬНЫМ стандартам Layher Allround.
 Никаких случайных float-значений. Если размер не в этом списке — это БРАК.
 """
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 from dataclasses import dataclass
 from enum import Enum
 import math
@@ -307,7 +307,7 @@ class LayherStandards:
     @classmethod
     def get_nearest_deck_length(cls, length: float) -> float:
         """Возвращает ближайшую стандартную длину настила."""
-        deck_lengths = [l for _, l in cls.DECK_SIZES]
+        deck_lengths = [deck_length for _, deck_length in cls.DECK_SIZES]
         return min(deck_lengths, key=lambda x: abs(x - length))
 
 

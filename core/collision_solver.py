@@ -7,9 +7,8 @@ Intelligent Collision Solver - "Вода обтекает камень"
 Используем trimesh для жесткой детекции коллизий.
 ИИ должен обходить препятствия, как вода обтекает камень.
 """
-import numpy as np
 import math
-from typing import List, Dict, Tuple, Optional, Set
+from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 import copy
 

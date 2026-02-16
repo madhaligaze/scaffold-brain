@@ -13,7 +13,7 @@ Enhanced Physics Engine with Closed-Loop Optimization
 """
 import copy
 import math
-from typing import List, Dict, Tuple, Optional, Set
+from typing import List, Dict, Optional, Set
 from dataclasses import dataclass
 
 try:
@@ -24,7 +24,7 @@ except ImportError:
     except ImportError:
         FEModel3D = None
 
-from core.layher_standards import LayherStandards, ComponentType
+from core.layher_standards import LayherStandards
 
 
 @dataclass
@@ -173,7 +173,7 @@ class StructuralBrain:
         # Анализ
         try:
             model.analyze(check_stability=True)
-        except Exception as e:
+        except Exception:
             # Конструкция неустойчива
             return LoadAnalysisResult(
                 status="COLLAPSE",

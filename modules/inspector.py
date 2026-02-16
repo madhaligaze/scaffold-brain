@@ -114,10 +114,10 @@ class ScaffoldInspector:
     def _find_simplifications(self, graph: Dict[str, Any], elements: List[Dict[str, Any]]) -> None:
         ledgers = [e for e in elements if e.get("type") in ("ledger", "transom")]
         by_level = defaultdict(list)
-        for l in ledgers:
-            p = self._parse_point(l.get("start"))
-            if p is not None:
-                by_level[round(p[2], 1)].append(l)
+        for ledger in ledgers:
+            start_point = self._parse_point(ledger.get("start"))
+            if start_point is not None:
+                by_level[round(start_point[2], 1)].append(ledger)
         for z, group in by_level.items():
             if len(group) > 4:
                 self.suggestions.append({"type": "SIMPLIFY_LEDGERS", "location": {"z": z}, "description": f"Level z={z:.1f}m has {len(group)} ledgers.", "potential_savings": f"{len(group)//2} ledgers"})
