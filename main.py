@@ -112,6 +112,11 @@ class StreamFrameRequest(BaseModel):
     frame_base64: str  # base64 encoded image
     camera_position: Optional[Dict] = None
     ar_points: List[Point3D] = []
+    # НОВОЕ: Облако точек от ARCore (мировые координаты, уже трансформированные).
+    # ARCore API: Frame.acquirePointCloud() → PointCloud.getPoints() → float[N*4]
+    # Формат: [[x, y, z, confidence], ...] или [[x, y, z], ...]
+    # Confidence опционален, используем только XYZ.
+    point_cloud: List[List[float]] = []
     timestamp: Optional[float] = None
 
 
@@ -122,6 +127,9 @@ class GenerateRequest(BaseModel):
     user_points: List[Point3D] = []
     use_ai_detection: bool = True
     optimize_structure: bool = True  # Включить Closed Loop оптимизацию
+    # НОВОЕ: если задан — используем AutoScaffolder вместо старого генератора.
+    # Формат: {"x": f, "y": f, "z": f} — точка доступа (труба/оборудование на потолке).
+    target_point: Optional[Point3D] = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -250,6 +258,16 @@ async def stream_frame(request: StreamFrameRequest):
             camera_position=request.camera_position,
             ar_points=[p.dict() for p in request.ar_points]
         )
+
+        # ── НОВОЕ: Заполняем VoxelWorld из point_cloud ──────────────────────
+        # Это основной источник "зрения" ИИ.
+        # point_cloud уже в мировых координатах от ARCore — просто кладём в сетку.
+        if request.point_cloud and BRAIN_V3_AVAILABLE:
+            voxel_world = session.scene_context.ensure_voxel_world()
+            added = voxel_world.add_point_cloud(request.point_cloud)
+            frame.quality_metrics = frame.quality_metrics or {}
+            frame.quality_metrics['voxels_added'] = added
+            frame.quality_metrics['total_voxels'] = voxel_world.total_voxels
         
         # TODO: Здесь должна быть детекция объектов через YOLO
         # Пока возвращаем заглушку
@@ -289,6 +307,69 @@ async def generate_variants(request: GenerateRequest):
         session = session_manager.get_session(request.session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Сессия не найдена")
+
+        # ── НОВОЕ: AutoScaffolder — умная сборка от целевой точки ────────────
+        if request.target_point is not None and BRAIN_V3_AVAILABLE:
+            voxel_world = session.scene_context.ensure_voxel_world()
+
+            # Заполняем воксели из YOLO-детекций накопленных в сессии
+            # (вспомогательно, если point_cloud не передавался)
+            all_dets = session.scene_context.all_detected_objects
+            if all_dets and voxel_world.total_voxels == 0:
+                voxel_world.ingest_yolo_detections(all_dets)
+
+            from modules.auto_scaffolder import AutoScaffolder
+            scaffolder = AutoScaffolder(
+                voxel_world=voxel_world,
+                ledger_len=request.target_dimensions.get('ledger_len', 1.09),
+                standard_h=request.target_dimensions.get('standard_h', 2.07),
+            )
+            target_dict = {
+                "x": request.target_point.x,
+                "y": request.target_point.y,
+                "z": request.target_point.z,
+            }
+            floor_z = request.target_dimensions.get('floor_z', 0.0)
+            variant = scaffolder.build_to_target(
+                target=target_dict,
+                floor_z=floor_z,
+            )
+
+            # Физический анализ
+            analysis = physics_brain.calculate_load_map(
+                variant['nodes'], variant['beams']
+            )
+            variant['physics_analysis'] = {
+                "status": analysis.status,
+                "max_load_ratio": analysis.max_load_ratio,
+                "critical_beams": analysis.critical_beams,
+            }
+
+            # Загружаем в структурный граф сессии
+            if hasattr(session, 'ensure_structural_graph'):
+                graph = session.ensure_structural_graph()
+                graph.load_from_variant(variant)
+
+            session.add_variant(variant)
+
+            blocked = sum(1 for b in variant['beams'] if b.get('blocked'))
+            return {
+                "status": "success",
+                "mode": "auto_scaffolder",
+                "variants": [variant],
+                "count": 1,
+                "blocked_beams": blocked,
+                "voxels_used": voxel_world.total_voxels,
+                "message": (
+                    f"AutoScaffolder: башня {variant.get('floors','?')} ярусов. "
+                    f"Препятствий в VoxelWorld: {voxel_world.total_voxels}. "
+                    f"Обойдено балок: {blocked}."
+                )
+            }
+        # ────────────────────────────────────────────────────────────────────
+        # СТАРЫЙ ПУТЬ: target_point не задан → классический генератор
+        # Обратная совместимость сохранена.
+        # ────────────────────────────────────────────────────────────────────
         
         # Приводим размеры к стандартам
         target_w = snap_to_layher_grid(
