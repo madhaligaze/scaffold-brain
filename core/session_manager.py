@@ -13,6 +13,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import json
 
+# Импорты новых модулей (try/except для обратной совместимости)
+try:
+    from modules.voxel_world import VoxelWorld
+    from modules.structural_graph import StructuralGraph
+    _BRAIN_MODULES_AVAILABLE = True
+except ImportError:
+    _BRAIN_MODULES_AVAILABLE = False
+
 
 @dataclass
 class CameraFrame:
@@ -40,6 +48,15 @@ class SceneContext:
     
     # Фотограмметрия - объединенное облако точек
     point_cloud: List[Dict] = field(default_factory=list)
+
+    # ── НОВОЕ: Воксельная карта пространства ──────────────────────────────
+    voxel_world: Optional[Any] = field(default=None)
+
+    def ensure_voxel_world(self, resolution: float = 0.1) -> Any:
+        """Лениво создаёт VoxelWorld при первом обращении."""
+        if self.voxel_world is None and _BRAIN_MODULES_AVAILABLE:
+            self.voxel_world = VoxelWorld(resolution=resolution)
+        return self.voxel_world
     
     def merge_frame(self, frame: CameraFrame, merge_threshold: float = 0.1):
         """
@@ -179,6 +196,9 @@ class Session:
         # Статистика
         self.total_frames_processed = 0
         self.total_objects_detected = 0
+
+        # ── НОВОЕ: Живой граф конструкции ─────────────────────────────────────
+        self.structural_graph: Optional[Any] = None
         
     def add_frame(self, frame: CameraFrame):
         """
@@ -197,6 +217,12 @@ class Session:
         """Добавить сгенерированный вариант"""
         self.generated_variants.append(variant)
         self.last_activity = time.time()
+
+    def ensure_structural_graph(self) -> Any:
+        """Лениво создаёт StructuralGraph при первом обращении."""
+        if self.structural_graph is None and _BRAIN_MODULES_AVAILABLE:
+            self.structural_graph = StructuralGraph()
+        return self.structural_graph
     
     def select_variant(self, variant_index: int) -> bool:
         """
