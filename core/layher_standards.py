@@ -91,6 +91,16 @@ class LayherStandards:
         (0.61, 2.57),
         (0.61, 3.07),
     ]
+
+    # Артикулы настилов (Layher steel deck 0.61m ширина, длина по пролету)
+    DECK_ARTICLES = {
+        0.73: "P-073",
+        1.09: "P-109",
+        1.57: "P-157",
+        2.07: "P-207",
+        2.57: "P-257",
+        3.07: "P-307",
+    }
     
     # ═══════════════════════════════════════════════════════════════════════
     # ХАРАКТЕРИСТИКИ РОЗЕТОК (Rosettes)
@@ -245,6 +255,17 @@ class LayherStandards:
                 max_load=cls.MAX_DIAGONAL_TENSION,
                 code=code
             )
+
+        # ═══ НАСТИЛЫ (Decks) ═══
+        for _, length in cls.DECK_SIZES:
+            code = cls.DECK_ARTICLES.get(length, f"P-{int(length*100)}")
+            library[code] = LayherComponent(
+                type=ComponentType.DECK,
+                length=length,
+                weight=11.0 + length * 3.2,
+                max_load=3.0,
+                code=code,
+            )
         
         return library
     
@@ -282,6 +303,12 @@ class LayherStandards:
             base_diagonals += 1
         
         return min(base_diagonals, 4)  # Максимум 4 диагонали на секцию
+
+    @classmethod
+    def get_nearest_deck_length(cls, length: float) -> float:
+        """Возвращает ближайшую стандартную длину настила."""
+        deck_lengths = [l for _, l in cls.DECK_SIZES]
+        return min(deck_lengths, key=lambda x: abs(x - length))
 
 
 class RosetteConnection:
