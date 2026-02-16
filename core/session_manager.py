@@ -199,6 +199,10 @@ class Session:
 
         # ── НОВОЕ: Живой граф конструкции ─────────────────────────────────────
         self.structural_graph: Optional[Any] = None
+
+        # ── НОВОЕ v4.0: Текущая структура для realtime-редактирования ────────
+        self.current_structure: List[Dict] = []
+        self.structure_history: List[Dict] = []
         
     def add_frame(self, frame: CameraFrame):
         """
@@ -223,6 +227,80 @@ class Session:
         if self.structural_graph is None and _BRAIN_MODULES_AVAILABLE:
             self.structural_graph = StructuralGraph()
         return self.structural_graph
+
+    def save_structure(self, structure: List[Dict]) -> None:
+        """Сохранить текущую структуру и push предыдущую версию в историю."""
+        if self.current_structure:
+            self.structure_history.append(
+                {
+                    "timestamp": time.time(),
+                    "structure": self.current_structure.copy(),
+                }
+            )
+
+        self.current_structure = structure
+        self.last_activity = time.time()
+
+    def remove_element(self, element_id: str) -> bool:
+        """Удалить элемент из текущей структуры."""
+        for i, elem in enumerate(self.current_structure):
+            if elem.get("id") == element_id:
+                self.structure_history.append(
+                    {
+                        "timestamp": time.time(),
+                        "action": "REMOVE",
+                        "element_id": element_id,
+                    }
+                )
+                self.current_structure.pop(i)
+                self.last_activity = time.time()
+                return True
+        return False
+
+    def add_element(self, element: Dict) -> str:
+        """Добавить элемент в структуру; при отсутствии id — сгенерировать."""
+        if "id" not in element:
+            element["id"] = f"elem_{uuid.uuid4().hex[:8]}"
+
+        self.current_structure.append(element)
+        self.structure_history.append(
+            {
+                "timestamp": time.time(),
+                "action": "ADD",
+                "element_id": element["id"],
+            }
+        )
+        self.last_activity = time.time()
+        return element["id"]
+
+    def undo_last_action(self) -> bool:
+        """Откатить последнее действие, если в истории есть снимок структуры."""
+        if not self.structure_history:
+            return False
+
+        last_state = self.structure_history.pop()
+        if "structure" in last_state:
+            self.current_structure = last_state["structure"]
+            self.last_activity = time.time()
+            return True
+
+        return False
+
+    def get_structure_statistics(self) -> Dict:
+        """Получить статистику по текущей структуре."""
+        if not self.current_structure:
+            return {"total_elements": 0}
+
+        by_type: Dict[str, int] = {}
+        for elem in self.current_structure:
+            t = elem.get("type", "unknown")
+            by_type[t] = by_type.get(t, 0) + 1
+
+        return {
+            "total_elements": len(self.current_structure),
+            "by_type": by_type,
+            "history_depth": len(self.structure_history),
+        }
     
     def select_variant(self, variant_index: int) -> bool:
         """
@@ -382,9 +460,12 @@ class SessionManager:
                 "objects": session.scene_context.all_detected_objects,
                 "ar_points": session.scene_context.all_ar_points,
                 "bounds": session.scene_context.estimated_bounds,
-                "point_cloud_size": len(session.scene_context.point_cloud)
+                "point_cloud_size": len(session.scene_context.point_cloud),
+                "point_cloud": session.scene_context.point_cloud,
             },
             "variants": session.generated_variants,
+            "current_structure": session.current_structure,
+            "structure_history": session.structure_history,
             "selected_variant_index": (
                 session.generated_variants.index(session.selected_variant)
                 if session.selected_variant in session.generated_variants
