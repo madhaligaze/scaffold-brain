@@ -88,20 +88,54 @@ class StructuralBrain:
                 # Полное закрепление (6 степеней свободы)
                 model.def_support(n['id'], True, True, True, True, True, True)
         
-        # Добавляем балки с реальными свойствами Layher
-        for b in beams:
-            model.add_member(
-                b['id'],
-                b['start'],
-                b['end'],
-                E=LayherStandards.STEEL_YOUNGS_MODULUS,    # 2.1e11 Па
-                G=LayherStandards.STEEL_YOUNGS_MODULUS / (2 * (1 + 0.3)),  # Модуль сдвига
-                Iy=LayherStandards.PIPE_MOMENT_OF_INERTIA,  # 1.1e-7 м⁴
-                Iz=LayherStandards.PIPE_MOMENT_OF_INERTIA,
-                J=LayherStandards.PIPE_TORSION_CONSTANT,    # 2.2e-7 м⁴
-                A=LayherStandards.PIPE_CROSS_SECTION_AREA,  # 4.5e-4 м²
+        # Добавляем материал/сечение и балки с реальными свойствами Layher.
+        # Поддерживаем обе сигнатуры PyNite/Pynite (старую и новую).
+        G = LayherStandards.STEEL_YOUNGS_MODULUS / (2 * (1 + 0.3))
+        material_name = "layher_steel"
+        section_name = "layher_tube"
+
+        if hasattr(model, 'materials') and material_name not in model.materials:
+            model.add_material(
+                material_name,
+                E=LayherStandards.STEEL_YOUNGS_MODULUS,
+                G=G,
+                nu=0.3,
+                rho=LayherStandards.STEEL_DENSITY,
+                fy=LayherStandards.STEEL_YIELD_STRENGTH,
             )
-        
+
+        if hasattr(model, 'sections') and section_name not in model.sections:
+            model.add_section(
+                section_name,
+                A=LayherStandards.PIPE_CROSS_SECTION_AREA,
+                Iy=LayherStandards.PIPE_MOMENT_OF_INERTIA,
+                Iz=LayherStandards.PIPE_MOMENT_OF_INERTIA,
+                J=LayherStandards.PIPE_TORSION_CONSTANT,
+            )
+
+        for b in beams:
+            try:
+                model.add_member(
+                    b['id'],
+                    b['start'],
+                    b['end'],
+                    material_name,
+                    section_name,
+                )
+            except TypeError:
+                # Fallback для старых версий с E/G/A/I/J параметрами.
+                model.add_member(
+                    b['id'],
+                    b['start'],
+                    b['end'],
+                    E=LayherStandards.STEEL_YOUNGS_MODULUS,
+                    G=G,
+                    Iy=LayherStandards.PIPE_MOMENT_OF_INERTIA,
+                    Iz=LayherStandards.PIPE_MOMENT_OF_INERTIA,
+                    J=LayherStandards.PIPE_TORSION_CONSTANT,
+                    A=LayherStandards.PIPE_CROSS_SECTION_AREA,
+                )
+
         return model
     
     def calculate_load_map(self, nodes: List[Dict], beams: List[Dict],
@@ -186,7 +220,7 @@ class StructuralBrain:
                 "status": status_text
             })
             
-            max_ratio = max(max_ratio, load_ratio)
+            max_ratio = float(max(max_ratio, load_ratio))
         
         # Генерируем рекомендации по усилению
         reinforcements = self._generate_reinforcements(
@@ -345,7 +379,7 @@ class StructuralBrain:
             "iterations": iteration,
             "final_analysis": final_analysis,
             "added_diagonals": added_diagonals_total,
-            "optimized": final_analysis.max_load_ratio < target_safety
+            "optimized": bool(final_analysis.max_load_ratio < target_safety)
         }
     
     def _add_reinforcements(self, nodes: List[Dict], beams: List[Dict],
