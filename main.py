@@ -12,13 +12,14 @@ Main FastAPI Server - AI Brain Backend
 """
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 import base64
 import io
 import time
 import traceback
+import json
 from pathlib import Path
 
 # Импорты исправленных модулей
@@ -50,13 +51,21 @@ try:
 except ImportError:
     BRAIN_V3_AVAILABLE = False
 
+
+# ── Новые модули v4.0 ───────────────────────────────────────────────────────
+from modules.mesher import PointCloudProcessor
+from modules.mesh_builder import ScaffoldMeshBuilder
+from modules.exporter import BOMExporter
+from modules.inspector import ScaffoldInspector
+from modules.debug_dumper import DebugDumper
+
 # ═══════════════════════════════════════════════════════════════════════════
 # FASTAPI APP
 # ═══════════════════════════════════════════════════════════════════════════
 
 app = FastAPI(
     title="AI Brain - Scaffolding Intelligence",
-    version="2.1.0",
+    version="4.0.0",
     description="Генеративный инжиниринг строительных лесов с Layher стандартами"
 )
 
@@ -73,6 +82,14 @@ app.add_middleware(
 scaffold_generator = ScaffoldGenerator()
 physics_brain = StructuralBrain()
 collision_solver = CollisionSolver(clearance=0.15)
+
+
+# v4.0 components
+point_cloud_processor = PointCloudProcessor()
+mesh_builder = ScaffoldMeshBuilder()
+bom_exporter = BOMExporter()
+scaffold_inspector = ScaffoldInspector()
+debug_dumper = DebugDumper()
 
 
 def _normalize_camera_pose(camera_pose: Optional[List[float]]) -> List[float]:
@@ -240,7 +257,7 @@ async def root():
     """Корневой endpoint - информация о сервере"""
     return {
         "name": "AI Brain Backend",
-        "version": "2.1.0",
+        "version": "4.0.0",
         "status": "operational",
         "features": {
             "layher_standards": True,
@@ -1025,6 +1042,24 @@ async def finalize_model(session_id: str):
             }
         )
 
+    # v4.0: сохраняем структуру и обогащаем ответ mesh/inspection
+    session.save_structure(final_options[0]["elements"])
+
+    mesh = mesh_builder.build_from_elements(final_options[0]["elements"])
+    final_options[0]["mesh"] = {
+        "vertices": mesh.vertices.tolist()[:1000] if hasattr(mesh, "vertices") else [],
+        "faces": mesh.faces.tolist()[:1000] if hasattr(mesh, "faces") else [],
+        "vertex_colors": (
+            mesh.visual.vertex_colors.tolist()[:1000]
+            if hasattr(mesh, "visual") and hasattr(mesh.visual, "vertex_colors")
+            else []
+        ),
+        "statistics": mesh_builder.get_statistics(),
+    }
+    final_options[0]["inspection"] = scaffold_inspector.inspect(
+        final_options[0]["elements"], physics_data
+    )
+
     return {
         "status": "SUCCESS",
         "options": final_options,
@@ -1037,6 +1072,175 @@ async def finalize_model(session_id: str):
             "voxels_used": voxel_world.total_voxels,
         },
     }
+
+
+@app.post("/session/update/{session_id}")
+async def update_structure_realtime(session_id: str, action: Dict[str, Any]):
+    start_time = time.time()
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not session.current_structure:
+        raise HTTPException(status_code=400, detail="No structure to update")
+
+    act = action.get("action")
+    if act == "REMOVE":
+        element_id = action.get("element_id")
+        if not element_id:
+            raise HTTPException(status_code=400, detail="element_id required")
+        if not session.remove_element(element_id):
+            raise HTTPException(status_code=404, detail="Element not found")
+    elif act == "ADD":
+        element_data = action.get("element_data")
+        if not element_data:
+            raise HTTPException(status_code=400, detail="element_data required")
+        session.add_element(element_data)
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+    phys_nodes = []
+    phys_beams = []
+    seen_nodes = set()
+    for el in session.current_structure:
+        for p in [el.get("start"), el.get("end")]:
+            if not p:
+                continue
+            k = f"{p.get('x', 0):.2f}_{p.get('y', 0):.2f}_{p.get('z', 0):.2f}"
+            if k not in seen_nodes:
+                phys_nodes.append({"id": k, "x": p.get("x", 0), "y": p.get("y", 0), "z": p.get("z", 0), "fixed": abs(p.get("z", 0)) < 0.1})
+                seen_nodes.add(k)
+        s = el.get("start", {})
+        e = el.get("end", {})
+        phys_beams.append({
+            "id": el.get("id"),
+            "type": el.get("type"),
+            "start": f"{s.get('x', 0):.2f}_{s.get('y', 0):.2f}_{s.get('z', 0):.2f}",
+            "end": f"{e.get('x', 0):.2f}_{e.get('y', 0):.2f}_{e.get('z', 0):.2f}",
+            "length": el.get("length", 0),
+        })
+
+    physics_res = physics_brain.calculate_load_map(phys_nodes, phys_beams)
+    if isinstance(physics_res, dict):
+        physics_status = physics_res.get("status", "COLLAPSE")
+        physics_data = physics_res.get("data", [])
+    else:
+        physics_status = getattr(physics_res, "status", "COLLAPSE")
+        physics_data = getattr(physics_res, "beam_loads", [])
+
+    by_id = {item.get("id"): item for item in physics_data}
+    affected = []
+    for el in session.current_structure:
+        phys_item = by_id.get(el.get("id"))
+        if phys_item:
+            old_ratio = el.get("load_ratio", 0)
+            new_ratio = phys_item.get("load_ratio", 0)
+            el["load_ratio"] = new_ratio
+            el["stress_color"] = phys_item.get("color", "green")
+            if abs(new_ratio - old_ratio) > 0.1:
+                affected.append(el.get("id"))
+
+    return {
+        "status": "UPDATED",
+        "is_stable": physics_status != "COLLAPSE",
+        "physics_status": physics_status,
+        "heatmap": physics_data,
+        "affected_elements": affected,
+        "processing_time_ms": int((time.time() - start_time) * 1000),
+    }
+
+
+@app.post("/session/beautify/{session_id}")
+async def beautify_environment(session_id: str, depth: int = 9):
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not session.scene_context.point_cloud:
+        raise HTTPException(status_code=400, detail="No point cloud available")
+
+    raw_points = [[p.get("x", 0), p.get("y", 0), p.get("z", 0)] for p in session.scene_context.point_cloud]
+    if point_cloud_processor.last_pcd is None:
+        point_cloud_processor.process_raw_points(raw_points)
+
+    result = point_cloud_processor.poisson_reconstruction(depth=depth)
+    if not result:
+        raise HTTPException(status_code=500, detail="Reconstruction failed")
+
+    return {"status": "SUCCESS", "environment_mesh": result, "statistics": result["statistics"]}
+
+
+@app.get("/session/export/{session_id}")
+async def export_bom(session_id: str, format: str = "csv", project_name: str = "Unnamed Project"):
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not session.current_structure and not session.generated_variants:
+        raise HTTPException(status_code=400, detail="No structure to export")
+
+    elements = session.current_structure or session.generated_variants[0].get("full_structure", [])
+    bom = _build_layher_bom_from_elements(elements)
+
+    if format == "csv":
+        csv_data = bom_exporter.export_to_csv(bom, project_name)
+        return Response(
+            content=csv_data,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=BOM_{session_id}.csv"},
+        )
+    if format == "xlsx":
+        filepath = f"/tmp/BOM_{session_id}.xlsx"
+        if not bom_exporter.export_to_excel(bom, filepath, project_name):
+            raise HTTPException(status_code=500, detail="Excel export failed")
+        return FileResponse(filepath, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=f"BOM_{session_id}.xlsx")
+    if format == "pdf":
+        filepath = f"/tmp/BOM_{session_id}.pdf"
+        if not bom_exporter.export_to_pdf(bom, filepath, project_name):
+            raise HTTPException(status_code=500, detail="PDF export failed")
+        return FileResponse(filepath, media_type="application/pdf", filename=f"BOM_{session_id}.pdf")
+
+    raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
+
+
+@app.post("/session/inspect/{session_id}")
+async def inspect_quality(session_id: str):
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not session.current_structure and not session.generated_variants:
+        raise HTTPException(status_code=400, detail="No structure to inspect")
+
+    elements = session.current_structure or session.generated_variants[0].get("full_structure", [])
+    physics_data = None
+    if session.generated_variants and "options" in session.generated_variants[0]:
+        opts = session.generated_variants[0].get("options", [])
+        if opts:
+            physics_data = opts[0].get("physics_data")
+
+    return scaffold_inspector.inspect(elements, physics_data)
+
+
+@app.get("/session/debug_dump/{session_id}")
+async def get_debug_dump(session_id: str, include_voxels: bool = False):
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session_json = session_manager.export_session_data(session_id)
+    if not session_json:
+        raise HTTPException(status_code=500, detail="Failed to export session")
+
+    filepath = debug_dumper.dump_session(
+        session_id=session_id,
+        session_data=json.loads(session_json),
+        reason="manual",
+        include_voxels=include_voxels,
+    )
+    return FileResponse(filepath, media_type="application/json", filename=f"debug_{session_id}.json")
+
+
+@app.get("/debug/list_dumps")
+async def list_debug_dumps(session_id: Optional[str] = None):
+    dumps = debug_dumper.list_dumps(session_id)
+    return {"total": len(dumps), "dumps": dumps}
 
 
 @app.websocket("/ws/{session_id}")

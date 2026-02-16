@@ -15,7 +15,7 @@ numpy==1.26.3
 scipy==1.11.4
 
 # 3D Geometry & Collision Detection
-trimesh==4.0.10
+trimesh==4.1.7
 shapely==2.0.2
 
 # Structural Graph (интерактивная физика)
@@ -37,3 +37,11 @@ pytest==7.4.3
 pytest-asyncio==0.21.1
 black==23.12.1
 ruff==0.1.11
+
+# v4.0 additions
+open3d==0.18.0
+rtree==1.2.0
+openpyxl==3.1.2
+pandas==2.2.0
+reportlab==4.0.9
+scikit-learn==1.4.0
