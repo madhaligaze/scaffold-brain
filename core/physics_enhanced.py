@@ -24,7 +24,7 @@ except ImportError:
     except ImportError:
         FEModel3D = None
 
-from layher_standards import LayherStandards, ComponentType
+from core.layher_standards import LayherStandards, ComponentType
 
 
 @dataclass

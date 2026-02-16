@@ -14,7 +14,7 @@ import math
 from typing import List, Dict, Tuple, Optional, Set, Any
 import copy
 
-from layher_standards import (
+from core.layher_standards import (
     LayherStandards, 
     BillOfMaterials, 
     RosetteConnection,
@@ -22,7 +22,7 @@ from layher_standards import (
     snap_to_layher_grid,
     validate_scaffold_dimensions
 )
-from collision_solver import CollisionSolver, Obstacle, create_obstacle_from_detection
+from core.collision_solver import CollisionSolver, Obstacle, create_obstacle_from_detection
 
 try:
     from modules.voxel_world import VoxelWorld
