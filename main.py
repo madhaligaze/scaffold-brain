@@ -10,17 +10,15 @@ Main FastAPI Server - AI Brain Backend
 ✓ BuilderFixed - генератор с валидацией
 ✓ SessionManager - контекст всей сцены
 """
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List, Dict, Optional, Any
 import base64
-import io
 import time
 import traceback
 import json
-from pathlib import Path
 
 # Импорты исправленных модулей
 from core.layher_standards import (
@@ -29,21 +27,17 @@ from core.layher_standards import (
     validate_scaffold_dimensions,
     snap_to_layher_grid
 )
-from core.physics_enhanced import StructuralBrain, LoadAnalysisResult, quick_safety_check
-from core.collision_solver import CollisionSolver, Obstacle, create_obstacle_from_detection
+from core.physics_enhanced import StructuralBrain, quick_safety_check
+from core.collision_solver import CollisionSolver
 from modules.builder import ScaffoldGenerator
 from core.session_manager import (
-    SessionManager, 
-    Session, 
     CameraFrame, 
     session_manager
 )
 
 # ── Новые модули v3.0 ───────────────────────────────────────────────────────
 try:
-    from modules.voxel_world import VoxelWorld
     from modules.astar_pathfinder import ScaffoldPathfinder
-    from modules.structural_graph import StructuralGraph
     from modules.auto_scaffolder import AutoScaffolder
     from modules.post_processor import StructuralPostProcessor
 
@@ -1169,7 +1163,7 @@ async def beautify_environment(session_id: str, depth: int = 9):
 
 
 @app.get("/session/export/{session_id}")
-async def export_bom(session_id: str, format: str = "csv", project_name: str = "Unnamed Project"):
+async def export_session_bom(session_id: str, format: str = "csv", project_name: str = "Unnamed Project"):
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -1323,9 +1317,9 @@ async def startup_event():
     print("🚀 AI BRAIN BACKEND STARTING")
     print("=" * 70)
     print(f"✓ Layher Standards: {len(LayherStandards.LEDGER_LENGTHS)} ledger lengths")
-    print(f"✓ Physics Engine: PyNite FEM")
-    print(f"✓ Collision Solver: Trimesh integration")
-    print(f"✓ Session Manager: Ready")
+    print("✓ Physics Engine: PyNite FEM")
+    print("✓ Collision Solver: Trimesh integration")
+    print("✓ Session Manager: Ready")
     print(f"{'✓' if BRAIN_V3_AVAILABLE else '✗'} Brain v3.0: VoxelWorld + A* + StructuralGraph")
     if not BRAIN_V3_AVAILABLE:
         print("  ⚠️  Установите: pip install networkx websockets")

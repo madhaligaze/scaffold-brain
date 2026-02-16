@@ -8,7 +8,7 @@ try:
     import cv2
 except Exception:  # pragma: no cover
     cv2 = None
-from typing import List, Dict, Tuple
+from typing import List, Dict
 try:
     from scipy.spatial import distance
 except Exception:  # pragma: no cover
@@ -171,10 +171,7 @@ class MultiViewFusion:
         
         # Анализируем распределение точек
         points = np.array([[p['x'], p['y'], p['z']] for p in current_coverage])
-        
-        # Находим центр масс
-        centroid = np.mean(points, axis=0)
-        
+                
         # Анализируем покрытие по осям
         x_range = np.ptp(points[:, 0])  # размах по X
         y_range = np.ptp(points[:, 1])  # размах по Y
