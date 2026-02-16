@@ -22,16 +22,16 @@ import traceback
 from pathlib import Path
 
 # Импорты исправленных модулей
-from layher_standards import (
+from core.layher_standards import (
     LayherStandards, 
     BillOfMaterials,
     validate_scaffold_dimensions,
     snap_to_layher_grid
 )
-from physics_enhanced import StructuralBrain, LoadAnalysisResult, quick_safety_check
-from collision_solver import CollisionSolver, Obstacle, create_obstacle_from_detection
-from builder_fixed import ScaffoldGenerator
-from session_manager import (
+from core.physics_enhanced import StructuralBrain, LoadAnalysisResult, quick_safety_check
+from core.collision_solver import CollisionSolver, Obstacle, create_obstacle_from_detection
+from modules.builder import ScaffoldGenerator
+from core.session_manager import (
     SessionManager, 
     Session, 
     CameraFrame, 
@@ -44,6 +44,7 @@ try:
     from modules.astar_pathfinder import ScaffoldPathfinder
     from modules.structural_graph import StructuralGraph
     from modules.auto_scaffolder import AutoScaffolder
+    from modules.post_processor import StructuralPostProcessor
 
     BRAIN_V3_AVAILABLE = True
 except ImportError:
@@ -72,6 +73,10 @@ app.add_middleware(
 scaffold_generator = ScaffoldGenerator()
 physics_brain = StructuralBrain()
 collision_solver = CollisionSolver(clearance=0.15)
+
+# v3.2: PostProcessor для диагоналей и настилов
+if BRAIN_V3_AVAILABLE:
+    post_processor = StructuralPostProcessor()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -784,6 +789,181 @@ async def modify_structure(request: StructureModifyRequest):
             if not result.get("is_stable")
             else f"Обновлено за {elapsed_ms:.0f} мс"
         ),
+    }
+
+
+@app.post("/session/model/{session_id}")
+async def finalize_model(session_id: str):
+    """
+    Финализация модели с полным циклом: A* → PostProcessor → Physics.
+    """
+    if not BRAIN_V3_AVAILABLE:
+        raise HTTPException(503, "Brain v3.2 модули недоступны")
+
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Сессия не найдена")
+
+    try:
+        from modules.session import DesignSession
+
+        if isinstance(session, DesignSession):
+            user_anchors = session.user_anchors
+        else:
+            user_anchors = (
+                session.scene_context.anchor_points
+                or session.scene_context.all_ar_points
+            )
+    except Exception:
+        user_anchors = []
+
+    if not user_anchors:
+        return {
+            "status": "ERROR",
+            "message": "No anchor points defined. User must place markers in AR first.",
+        }
+
+    print(f"🏗️  Industrial AI Modeling for {session_id}... ({len(user_anchors)} anchors)")
+
+    start_anchor = user_anchors[0]
+    end_anchor = user_anchors[-1]
+
+    start_node = {
+        "x": start_anchor.get("x", 0),
+        "y": start_anchor.get("y", 0),
+        "z": start_anchor.get("z", 0),
+    }
+    target_node = {
+        "x": end_anchor.get("x", 0),
+        "y": end_anchor.get("y", 0),
+        "z": end_anchor.get("z", 0) + 2.0,
+    }
+
+    voxel_world = session.scene_context.ensure_voxel_world()
+    pathfinder = ScaffoldPathfinder(voxel_world)
+
+    path_segments = pathfinder.find_path(start_node, target_node)
+
+    if not path_segments:
+        return {
+            "status": "FAILURE",
+            "message": "Path blocked or impossible. Check VoxelWorld obstacles.",
+            "voxels_in_world": voxel_world.total_voxels,
+        }
+
+    skeleton = []
+    for i, seg in enumerate(path_segments):
+        if isinstance(seg, dict) and "start" in seg and "end" in seg:
+            skeleton.append(
+                {
+                    "id": f"sk_{i}",
+                    "type": seg.get("type", "ledger"),
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "length": seg.get("length", 2.0),
+                    "weight": 10.0,
+                }
+            )
+
+    full_structure = post_processor.process(skeleton)
+
+    print(
+        f"  PostProcessor: {len(skeleton)} → {len(full_structure)} elements "
+        f"(added {len(full_structure) - len(skeleton)} bracing/decks)"
+    )
+
+    phys_nodes = []
+    phys_beams = []
+    seen_nodes = set()
+
+    for el in full_structure:
+        for p in [el["start"], el["end"]]:
+            k = f"{p[0]:.2f}_{p[1]:.2f}_{p[2]:.2f}"
+            if k not in seen_nodes:
+                phys_nodes.append(
+                    {
+                        "id": k,
+                        "x": p[0],
+                        "y": p[1],
+                        "z": p[2],
+                        "fixed": abs(p[2]) < 0.1,
+                    }
+                )
+                seen_nodes.add(k)
+
+        s = el["start"]
+        e = el["end"]
+        phys_beams.append(
+            {
+                "id": el["id"],
+                "type": el["type"],
+                "start": f"{s[0]:.2f}_{s[1]:.2f}_{s[2]:.2f}",
+                "end": f"{e[0]:.2f}_{e[1]:.2f}_{e[2]:.2f}",
+                "length": el.get("length", 0),
+            }
+        )
+
+    physics_res = physics_brain.calculate_load_map(phys_nodes, phys_beams)
+
+    if isinstance(physics_res, dict):
+        physics_status = physics_res.get("status", "COLLAPSE")
+        physics_data = physics_res.get("data", [])
+    else:
+        physics_status = getattr(physics_res, "status", "COLLAPSE")
+        physics_data = getattr(physics_res, "beam_loads", [])
+
+    safety_score = 0
+    if physics_status == "OK":
+        loads = [r.get("load_ratio", 0) for r in physics_data]
+        if loads:
+            max_load = max(loads)
+            safety_score = int((1.0 - min(max_load, 1.0)) * 100)
+
+            by_id = {item.get("id"): item for item in physics_data}
+            for el in full_structure:
+                phys_item = by_id.get(el.get("id"))
+                if phys_item:
+                    el["load_ratio"] = phys_item.get("load_ratio", 0.0)
+                    el["stress_color"] = phys_item.get("color", "green")
+        else:
+            safety_score = 100
+    else:
+        print("⚠️  Physics calculation FAILED (Structure unstable)")
+
+    final_options = [
+        {
+            "id": 1,
+            "name": "AI Engineered (Layher Allround)",
+            "elements": [],
+            "safety_score": safety_score,
+            "total_weight": sum(e.get("weight", 0) for e in full_structure),
+            "physics_status": physics_status,
+        }
+    ]
+
+    for el in full_structure:
+        final_options[0]["elements"].append(
+            {
+                "id": el.get("id", "gen"),
+                "type": el["type"],
+                "start": {"x": el["start"][0], "y": el["start"][1], "z": el["start"][2]},
+                "end": {"x": el["end"][0], "y": el["end"][1], "z": el["end"][2]},
+                "length": el.get("length", 0),
+                "stress_color": el.get("stress_color", "green"),
+                "load_ratio": el.get("load_ratio", 0.0),
+            }
+        )
+
+    return {
+        "status": "SUCCESS",
+        "options": final_options,
+        "statistics": {
+            "skeleton_elements": len(skeleton),
+            "total_elements": len(full_structure),
+            "added_diagonals": sum(1 for e in full_structure if e["type"] == "diagonal"),
+            "added_decks": sum(1 for e in full_structure if e["type"] == "deck"),
+            "voxels_used": voxel_world.total_voxels,
+        },
     }
 
 
