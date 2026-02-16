@@ -92,6 +92,7 @@ class CollisionSolver:
         """
         self.clearance = clearance
         self.collision_cache: Dict[str, bool] = {}
+        self.non_removable_types = {"standard", "ledger", "transom"}
     
     def check_beam_obstacle_collision(self, beam_start: Tuple[float, float, float],
                                      beam_end: Tuple[float, float, float],
@@ -330,10 +331,22 @@ class CollisionSolver:
                             if moved_end:
                                 moved_nodes.add(beam['end'])
                             
-                            # Если не помогло — удаляем балку (крайняя мера)
+                            # Если не помогло: несущие элементы удалять ЗАПРЕЩЕНО
                             if not (moved_start or moved_end):
-                                resolved_beams = [b for b in resolved_beams 
-                                                 if b['id'] != beam_id]
+                                beam_type = str(beam.get("type", "")).lower()
+                                if beam_type in self.non_removable_types:
+                                    return {
+                                        "nodes": resolved_nodes,
+                                        "beams": resolved_beams,
+                                        "iterations": iteration + 1,
+                                        "removed_beams": removed_beams,
+                                        "moved_nodes": list(moved_nodes),
+                                        "success": False,
+                                        "error": "Невозможно построить: препятствие в несущей зоне"
+                                    }
+
+                                # Для второстепенных элементов допускается удаление как крайняя мера
+                                resolved_beams = [b for b in resolved_beams if b["id"] != beam_id]
                                 removed_beams.append(beam_id)
         
         # Достигли максимума итераций

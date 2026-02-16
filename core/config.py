@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # === Нагрузки ===
     DEFAULT_DISTRIBUTED_LOAD: float = -1000.0  # Н/м (≈100 кг/м)
     SAFETY_FACTOR: float = 1.5
+
+    # === Геометрия лесов (Layher) ===
+    # ВАЖНО: дефолт пролета должен быть только из каталога Layher
+    DEFAULT_BAY_LENGTH: float = 2.07
     
     # Пороги для цветовой индикации
     LOAD_RATIO_GREEN: float = 0.6

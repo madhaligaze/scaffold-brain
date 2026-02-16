@@ -263,13 +263,13 @@ class StructuralBrain:
                           f"(нагрузка {load_info['load_ratio']*100:.0f}%)"
             })
             
-            # Если балка очень длинная, рекомендуем дополнительную стойку
+            # Если балка очень длинная, рекомендуем разбиение пролета
             if length > 2.5:
                 reinforcements.append({
-                    "type": "add_support",
+                    "type": "split_bay",
                     "beam_id": beam_id,
                     "position": {"x": mid_x, "y": mid_y, "z": 0.0},
-                    "message": f"Добавить промежуточную стойку под балкой {beam_id}"
+                    "message": f"Разбить пролет балки {beam_id} (добавить промежуточную стойку)"
                 })
         
         return reinforcements
@@ -360,39 +360,66 @@ class StructuralBrain:
         node_map = {n['id']: n for n in nodes}
         
         for rec in reinforcements:
-            if rec['type'] != 'add_diagonal':
-                continue
-            
             beam_id = rec.get('beam_id')
             if not beam_id:
                 continue
-            
+
             # Находим критическую балку
             beam = next((b for b in beams if b['id'] == beam_id), None)
             if not beam:
                 continue
-            
+
             start_node = node_map.get(beam['start'])
             end_node = node_map.get(beam['end'])
-            
+
             if not start_node or not end_node:
                 continue
-            
-            # Добавляем диагональ от start к противоположному верхнему узлу
-            # (упрощенная логика, в реале нужен поиск соседних стоек)
-            diagonal_id = f"diag_{beam_id}_{added_count}"
-            
-            # Ищем верхний узел над start_node
-            upper_node = self._find_upper_node(nodes, start_node)
-            if upper_node and upper_node['id'] != end_node['id']:
+
+            if rec['type'] == 'add_diagonal':
+                # Добавляем диагональ от start к противоположному верхнему узлу
+                diagonal_id = f"diag_{beam_id}_{added_count}"
+
+                # Ищем верхний узел над start_node
+                upper_node = self._find_upper_node(nodes, start_node)
+                if upper_node and upper_node['id'] != end_node['id']:
+                    beams.append({
+                        "id": diagonal_id,
+                        "start": start_node['id'],
+                        "end": upper_node['id'],
+                        "type": "diagonal"
+                    })
+                    added_count += 1
+
+            elif rec['type'] == 'split_bay':
+                # Разбиение пролета: добавляем промежуточную стойку и 2 коротких балки
+                mid_x = (start_node['x'] + end_node['x']) / 2
+                mid_y = (start_node['y'] + end_node['y']) / 2
+                mid_z = start_node['z']
+
+                support_node_id = f"split_{beam_id}_{added_count}"
+                if support_node_id in node_map:
+                    continue
+
+                support_node = {"id": support_node_id, "x": mid_x, "y": mid_y, "z": mid_z}
+                nodes.append(support_node)
+                node_map[support_node_id] = support_node
+
+                # Заменяем одну длинную балку двумя короткими
+                beams.remove(beam)
                 beams.append({
-                    "id": diagonal_id,
+                    "id": f"{beam_id}_a",
                     "start": start_node['id'],
-                    "end": upper_node['id'],
-                    "type": "diagonal"
+                    "end": support_node_id,
+                    "type": beam.get('type', 'ledger')
+                })
+                beams.append({
+                    "id": f"{beam_id}_b",
+                    "start": support_node_id,
+                    "end": end_node['id'],
+                    "type": beam.get('type', 'ledger')
                 })
                 added_count += 1
-        
+
         return added_count
     
     def _find_upper_node(self, nodes: List[Dict], ref_node: Dict) -> Optional[Dict]:
