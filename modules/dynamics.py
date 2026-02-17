@@ -3,9 +3,8 @@
 Модуль динамических нагрузок для анализа ветра, вибрации и резонанса.
 Критично для высотных лесов и конструкций около работающего оборудования.
 """
-import numpy as np
 import math
-from typing import List, Dict, Tuple
+from typing import List, Dict
 
 class DynamicLoadAnalyzer:
     """
@@ -196,7 +195,7 @@ class DynamicLoadAnalyzer:
                 f"⚠️ Риск резонанса {int(resonance_risk*100)}%. Рекомендуется изменить жесткость конструкции."
             )
         else:
-            recommendations.append(f"✓ Резонанс маловероятен. Частоты разнесены достаточно.")
+            recommendations.append("✓ Резонанс маловероятен. Частоты разнесены достаточно.")
         
         if min_distance < 1.0:
             recommendations.append(
@@ -350,15 +349,15 @@ class DynamicLoadAnalyzer:
                 total_mass += beam_len * 3.5  # кг
         
         # 2. Оценка жесткости (упрощенно через модуль упругости и геометрию)
-        # E = 2.1e11 Па, I = 1.1e-7 м4 (момент инерции трубы 48х3)
+        # E = 2.1e11 Па, inertia = 1.1e-7 м4 (момент инерции трубы 48х3)
         E = 2.1e11
-        I = 1.1e-7
+        inertia = 1.1e-7
         
         # Средняя длина балки
         avg_beam_length = 2.0  # м (примерно)
         
         # Жесткость балки: k ≈ 3*E*I / L³
-        k = 3 * E * I / (avg_beam_length ** 3)
+        k = 3 * E * inertia / (avg_beam_length ** 3)
         
         # Собственная частота
         omega = math.sqrt(k / total_mass) if total_mass > 0 else 0

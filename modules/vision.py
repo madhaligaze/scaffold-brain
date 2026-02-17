@@ -484,10 +484,14 @@ class SceneDiagnostician:
 
             if near_left or near_right or near_top or near_bottom:
                 direction = []
-                if near_left:   direction.append("слева")
-                if near_right:  direction.append("справа")
-                if near_top:    direction.append("сверху")
-                if near_bottom: direction.append("снизу")
+                if near_left:
+                    direction.append("слева")
+                if near_right:
+                    direction.append("справа")
+                if near_top:
+                    direction.append("сверху")
+                if near_bottom:
+                    direction.append("снизу")
 
                 occluded.append({
                     "type": obj.get("type", "unknown"),
@@ -657,9 +661,6 @@ class SceneDiagnostician:
                 inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
                 area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
                 area_b = max(1, (bx2 - bx1) * (by2 - by1))
-                union_area = area_a + area_b - inter_area
-
-                iou = inter_area / union_area
                 overlap_of_smaller = inter_area / min(area_a, area_b)
 
                 if overlap_of_smaller > OVERLAP_THRESHOLD:

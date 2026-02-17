@@ -9,19 +9,25 @@ Fixed Scaffold Builder - Генератор с правильными станд
 
 Никаких случайных float-значений. Только стандарты Layher.
 """
-import numpy as np
 import math
-from typing import List, Dict, Tuple, Optional, Set
+from typing import List, Dict, Optional, Any
 import copy
 
-from layher_standards import (
+from core.layher_standards import (
     LayherStandards, 
     BillOfMaterials, 
-    RosetteConnection,
+    ComponentType,
     snap_to_layher_grid,
     validate_scaffold_dimensions
 )
-from collision_solver import CollisionSolver, Obstacle, create_obstacle_from_detection
+from core.collision_solver import CollisionSolver, Obstacle
+
+try:
+    from modules.voxel_world import VoxelWorld
+    from modules.astar_pathfinder import ScaffoldPathfinder
+    PATHFINDER_AVAILABLE = True
+except ImportError:
+    PATHFINDER_AVAILABLE = False
 
 
 class ScaffoldGenerator:
@@ -61,7 +67,28 @@ class ScaffoldGenerator:
         ]
         
         self.collision_solver = CollisionSolver(clearance=0.15)
+        self._voxel_world: Optional[Any] = None
+        self._pathfinder: Optional[Any] = None
         
+
+    def set_voxel_world(self, voxel_world: 'VoxelWorld') -> None:
+        """Подключить воксельную карту из сессии перед генерацией."""
+        self._voxel_world = voxel_world
+        if PATHFINDER_AVAILABLE:
+            self._pathfinder = ScaffoldPathfinder(voxel_world)
+
+    def _check_beam_path(self, start: Dict, end: Dict) -> bool:
+        """Проверка пути балки через VoxelWorld."""
+        if self._voxel_world is None:
+            return True
+        return not self._voxel_world.is_blocked(start, end)
+
+    def _route_beam(self, start: Dict, end: Dict) -> List[Dict]:
+        """Маршрут балки с обходом препятствий."""
+        if self._pathfinder is None:
+            return [start, end]
+        return self._pathfinder.find_path(start, end)
+
     # ═══════════════════════════════════════════════════════════════════════
     # ПУБЛИЧНЫЕ МЕТОДЫ
     # ═══════════════════════════════════════════════════════════════════════
@@ -130,7 +157,8 @@ class ScaffoldGenerator:
     def generate_smart_options(self, user_points: List[Dict],
                               ai_points: List[Dict],
                               bounds: Dict,
-                              obstacles: Optional[List[Dict]] = None) -> List[Dict]:
+                              obstacles: Optional[List[Dict]] = None,
+                              voxel_world: Optional[Any] = None) -> List[Dict]:
         """
         Умная генерация с учетом точек пользователя и AI детекций.
         
@@ -148,6 +176,9 @@ class ScaffoldGenerator:
         Returns:
             3 варианта с правильными размерами
         """
+        if voxel_world is not None and PATHFINDER_AVAILABLE:
+            self.set_voxel_world(voxel_world)
+
         # Приводим габариты к стандартам
         W = snap_to_layher_grid(max(float(bounds.get("w", 4.0)), 1.0), "ledger")
         H = snap_to_layher_grid(max(float(bounds.get("h", 3.0)), 1.0), "standard")
@@ -357,27 +388,29 @@ class ScaffoldGenerator:
                     })
                     beam_counter += 1
         
-        # Создаем диагонали (по упрощенной схеме)
-        # В каждой секции добавляем одну диагональ
+        # Создаем диагонали только стандартных длин Layher
         for iz in range(nz):
             for iy in range(ny):
                 for ix in range(nx):
                     # Диагональ от нижнего угла к верхнему противоположному
                     start_id = node_map[(ix, iy, iz)]
                     end_id = node_map[(ix + 1, iy + 1, iz + 1)]
-                    
+
                     diag_length = math.sqrt(
                         ledger_len**2 + ledger_len**2 + stand_len**2
                     )
-                    
-                    beams.append({
-                        "id": f"diag{beam_counter}",
-                        "start": start_id,
-                        "end": end_id,
-                        "type": "diagonal",
-                        "length": float(diag_length)
-                    })
-                    beam_counter += 1
+                    std_diag_length = snap_to_layher_grid(diag_length, "diagonal")
+
+                    # Создаем диагональ только если есть валидная длина из каталога
+                    if LayherStandards.validate_dimensions(ComponentType.DIAGONAL, std_diag_length):
+                        beams.append({
+                            "id": f"diag{beam_counter}",
+                            "start": start_id,
+                            "end": end_id,
+                            "type": "diagonal",
+                            "length": float(std_diag_length)
+                        })
+                        beam_counter += 1
         
         # Создаем BOM (Bill of Materials)
         bom = self._generate_bom(beams)
@@ -425,9 +458,25 @@ class ScaffoldGenerator:
             obstacles
         )
         
-        # TODO: Интеграция с anchors (подгонка узлов к опорным точкам)
-        
+        node_lookup = {node["id"]: node for node in variant.get("nodes", [])}
+        for beam in variant.get("beams", []):
+            start = node_lookup.get(beam.get("start"))
+            end = node_lookup.get(beam.get("end"))
+            if not start or not end:
+                continue
+            beam["path_clear"] = self._check_beam_path(start, end)
+            if not beam["path_clear"]:
+                beam["route"] = self._route_beam(start, end)
+
         return variant
+
+    def _assert_bom_components_exist(self, bom: BillOfMaterials):
+        """Проверяет, что каждый код BOM есть в библиотеке Layher."""
+        missing_codes = [code for code in bom.components if code not in bom.library]
+        if missing_codes:
+            raise AssertionError(
+                "BOM содержит несуществующие артикулы Layher: " + ", ".join(sorted(missing_codes))
+            )
     
     def _estimate_step(self, points: List[Dict]) -> float:
         """
@@ -440,7 +489,7 @@ class ScaffoldGenerator:
             Оптимальный шаг в метрах
         """
         if len(points) < 2:
-            return 2.0  # Дефолтный шаг
+            return LayherStandards.get_nearest_ledger_length(2.07)  # Дефолтный шаг Layher
         
         # Вычисляем среднее расстояние между ближайшими соседями
         distances = []
@@ -465,7 +514,7 @@ class ScaffoldGenerator:
             avg_dist = sum(distances) / len(distances)
             return max(1.0, min(avg_dist, 3.0))  # Ограничиваем 1.0 - 3.0м
         
-        return 2.0
+        return LayherStandards.get_nearest_ledger_length(2.07)
     
     def _generate_bom(self, beams: List[Dict]) -> BillOfMaterials:
         """
@@ -482,7 +531,7 @@ class ScaffoldGenerator:
         # Подсчитываем компоненты по типам
         for beam in beams:
             beam_type = beam.get('type', 'ledger')
-            length = beam.get('length', 2.0)
+            length = beam.get('length', 2.07)
             
             # Определяем код компонента
             if beam_type == 'standard':
@@ -504,6 +553,7 @@ class ScaffoldGenerator:
             
             bom.add_component(code, quantity=1)
         
+        self._assert_bom_components_exist(bom)
         return bom
 
 
@@ -535,7 +585,7 @@ if __name__ == "__main__":
         if errors:
             print(f"   ⚠️ Ошибки валидации: {len(errors)}")
         else:
-            print(f"   ✓ Все размеры соответствуют стандартам Layher")
+            print("   ✓ Все размеры соответствуют стандартам Layher")
     
     print("\n2. Проверка коррекции размеров:")
     test_values = [2.0, 2.13, 3.0]

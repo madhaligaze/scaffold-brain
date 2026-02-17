@@ -8,7 +8,7 @@ __author__  = "Build Engineering Team"
 
 from .vision        import Eyes, SceneDiagnostician, VisionSystem
 from .physics       import StructuralBrain
-from .builder       import ScaffoldGenerator, ScaffoldExpert, PathFinder
+from .builder       import ScaffoldGenerator
 from .dynamics      import DynamicLoadAnalyzer, ProgressiveCollapseAnalyzer
 from .photogrammetry import PhotogrammetrySystem, MultiViewFusion
 from .geometry      import GeometryUtils, CollisionDetector, WorldGeometry  # ИСПРАВЛЕНО
@@ -20,7 +20,7 @@ __all__ = [
     # Physics
     "StructuralBrain",
     # Builder
-    "ScaffoldGenerator", "ScaffoldExpert", "PathFinder",
+    "ScaffoldGenerator",
     # Dynamics
     "DynamicLoadAnalyzer", "ProgressiveCollapseAnalyzer",
     # Photogrammetry
