@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Dict, List, Set
+from typing import Any, Dict, List, Set
 
 try:
     import networkx as nx
@@ -161,6 +161,54 @@ class StructuralGraph:
         return {
             "nodes": sorted(detached_nodes),
             "beams": sorted(detached_beams),
+        }
+
+    def check_element_criticality(self, element_id: str) -> Dict[str, Any]:
+        """Check whether removing a beam would detach unsupported substructures."""
+        if element_id not in self._beams:
+            return {
+                "is_critical": False,
+                "would_collapse_count": 0,
+                "affected_nodes": [],
+                "affected_beams": [],
+            }
+
+        beam = self._beams[element_id]
+        start, end = beam.data.get("start"), beam.data.get("end")
+
+        if self._g is not None:
+            temp_g = self._g.copy()
+            if temp_g.has_edge(start, end):
+                temp_g.remove_edge(start, end)
+
+            fixed_nodes = {nid for nid, n in self._nodes.items() if n.is_fixed}
+            detached = set()
+
+            if len(temp_g) > 0:
+                for component in nx.connected_components(temp_g):
+                    if not any(node_id in fixed_nodes for node_id in component):
+                        detached.update(component)
+
+            affected_beams = []
+            for bid, b in self._beams.items():
+                if bid == element_id:
+                    continue
+                s, e = b.data.get("start"), b.data.get("end")
+                if s in detached or e in detached:
+                    affected_beams.append(bid)
+
+            return {
+                "is_critical": len(detached) > 0,
+                "would_collapse_count": len(affected_beams),
+                "affected_nodes": sorted(detached),
+                "affected_beams": affected_beams,
+            }
+
+        return {
+            "is_critical": False,
+            "would_collapse_count": 0,
+            "affected_nodes": [],
+            "affected_beams": [],
         }
 
     def _recalculate_loads(self, beam_ids: List[str]) -> None:

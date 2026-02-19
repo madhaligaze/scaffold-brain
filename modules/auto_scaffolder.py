@@ -8,19 +8,33 @@ from typing import Dict, List, Optional, Tuple
 try:
     from modules.voxel_world import VoxelWorld
     from modules.astar_pathfinder import ScaffoldPathfinder
-    from core.layher_standards import snap_to_layher_grid
+    from modules.layher_standards import snap_to_layher_grid
 except ImportError:
     from voxel_world import VoxelWorld
     from astar_pathfinder import ScaffoldPathfinder
-    from core.layher_standards import snap_to_layher_grid
+    from modules.layher_standards import snap_to_layher_grid
 
 
 class AutoScaffolder:
     MIN_PLATFORM_WIDTH = 1.09
     SAFETY_DECK_MARGIN = 0.5
 
-    def __init__(self, voxel_world: VoxelWorld, ledger_len: float = 1.09, standard_h: float = 2.07):
+    def __init__(
+        self,
+        voxel_world: VoxelWorld,
+        ledger_len: float = 1.09,
+        standard_h: float = 2.07,
+        *,
+        world_objects: Optional[List[Dict]] = None,
+        clearance_min: float = 0.15,
+        clearance_tentative: float = 0.30,
+        clearance_needs_scan: float = 0.50,
+    ):
         self.world = voxel_world
+        self.world_objects = list(world_objects or [])
+        self.clearance_min = float(clearance_min)
+        self.clearance_tentative = float(clearance_tentative)
+        self.clearance_needs_scan = float(clearance_needs_scan)
         self.ledger_len = snap_to_layher_grid(ledger_len, "ledger")
         self.standard_h = snap_to_layher_grid(standard_h, "standard")
         self.pathfinder = ScaffoldPathfinder(voxel_world, step_h=self.ledger_len, step_v=self.standard_h)
@@ -31,6 +45,17 @@ class AutoScaffolder:
         clearance_box: Optional[Dict] = None,
         floor_z: float = 0.0,
     ) -> Dict:
+        # Stage 3 safety policy: inflate obstacles around tentative/needs_scan objects
+        try:
+            if self.world_objects:
+                self.world.apply_safety_overlays(
+                    self.world_objects,
+                    clearance_min=self.clearance_min,
+                    clearance_tentative=self.clearance_tentative,
+                    clearance_needs_scan=self.clearance_needs_scan,
+                )
+        except Exception:
+            pass
         if clearance_box is None:
             clearance_box = {"width": self.ledger_len, "depth": self.ledger_len}
 
@@ -110,6 +135,26 @@ class AutoScaffolder:
                 en = next(n for n in nodes if n["id"] == end_id)
                 beams.append({"id": f"diag_{ci}_{floor_idx}", "type": "diagonal", "start": start_id, "end": end_id, "length": round(math.dist([sn['x'], sn['y'], sn['z']], [en['x'], en['y'], en['z']]), 4)})
 
+        warnings: List[str] = []
+        scan_suggestions: List[Dict] = []
+        if self.world_objects:
+            if any(bool(o.get("needs_scan", False)) for o in self.world_objects):
+                warnings.append("Обнаружены объекты с needs_scan (часть геометрии уходит в UNKNOWN). Планирование выполнено консервативно.")
+            if any((o.get("status") or "").upper() == "TENTATIVE" for o in self.world_objects):
+                warnings.append("Есть TENTATIVE объекты: clearance увеличен для безопасности.")
+
+            for o in self.world_objects:
+                for h in (o.get("extension_hypotheses") or []):
+                    if h.get("stop_reason") == "UNKNOWN" and h.get("scan_hint_world") is not None:
+                        scan_suggestions.append(
+                            {
+                                "object_id": o.get("id"),
+                                "object_label": o.get("class_label"),
+                                "end": h.get("end"),
+                                "world_point": h.get("scan_hint_world"),
+                            }
+                        )
+
         return {
             "nodes": nodes,
             "beams": beams,
@@ -117,6 +162,14 @@ class AutoScaffolder:
             "target": target,
             "floors": num_floors,
             "floor_z": actual_floor,
+            "warnings": warnings,
+            "scan_suggestions": scan_suggestions,
+            "safety_policy": {
+                "clearance_min": self.clearance_min,
+                "clearance_tentative": self.clearance_tentative,
+                "clearance_needs_scan": self.clearance_needs_scan,
+                "unknown_space_policy": "forbid_by_default",
+            },
         }
 
     def _insert_detour(self, nodes: List[Dict], beams: List[Dict], path: List[Dict], start_id: str, end_id: str) -> Tuple[List[Dict], List[Dict]]:

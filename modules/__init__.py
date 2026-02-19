@@ -1,32 +1,51 @@
 # modules/__init__.py
 """
-Build AI Brain — модули искусственного интеллекта для строительных лесов.
+Build AI Brain — module package exports.
+
+This package intentionally uses lazy attribute loading so lightweight submodules
+(e.g. `modules.active_scanning`) can be imported in minimal environments
+without pulling heavyweight optional dependencies.
 """
 
+from importlib import import_module
+from typing import Dict, Tuple
+
 __version__ = "2.1.0"
-__author__  = "Build Engineering Team"
+__author__ = "Build Engineering Team"
 
-from .vision        import Eyes, SceneDiagnostician, VisionSystem
-from .physics       import StructuralBrain
-from .builder       import ScaffoldGenerator
-from .dynamics      import DynamicLoadAnalyzer, ProgressiveCollapseAnalyzer
-from .photogrammetry import PhotogrammetrySystem, MultiViewFusion
-from .geometry      import GeometryUtils, CollisionDetector, WorldGeometry  # ИСПРАВЛЕНО
-from .session       import DesignSession, SessionStorage                     # ИСПРАВЛЕНО
-
-__all__ = [
+_EXPORTS: Dict[str, Tuple[str, str]] = {
     # Vision
-    "Eyes", "SceneDiagnostician", "VisionSystem",
+    "Eyes": (".vision", "Eyes"),
+    "SceneDiagnostician": (".vision", "SceneDiagnostician"),
+    "VisionSystem": (".vision", "VisionSystem"),
     # Physics
-    "StructuralBrain",
+    "StructuralBrain": (".physics", "StructuralBrain"),
     # Builder
-    "ScaffoldGenerator",
+    "ScaffoldGenerator": (".builder", "ScaffoldGenerator"),
     # Dynamics
-    "DynamicLoadAnalyzer", "ProgressiveCollapseAnalyzer",
+    "DynamicLoadAnalyzer": (".dynamics", "DynamicLoadAnalyzer"),
+    "ProgressiveCollapseAnalyzer": (".dynamics", "ProgressiveCollapseAnalyzer"),
     # Photogrammetry
-    "PhotogrammetrySystem", "MultiViewFusion",
+    "PhotogrammetrySystem": (".photogrammetry", "PhotogrammetrySystem"),
+    "MultiViewFusion": (".photogrammetry", "MultiViewFusion"),
     # Geometry
-    "GeometryUtils", "CollisionDetector", "WorldGeometry",
+    "GeometryUtils": (".geometry", "GeometryUtils"),
+    "CollisionDetector": (".geometry", "CollisionDetector"),
+    "WorldGeometry": (".geometry", "WorldGeometry"),
     # Session
-    "DesignSession", "SessionStorage",
-]
+    "DesignSession": (".session", "DesignSession"),
+    "SessionStorage": (".session", "SessionStorage"),
+}
+
+__all__ = list(_EXPORTS.keys())
+
+
+def __getattr__(name: str):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    module_name, attr_name = _EXPORTS[name]
+    module = import_module(module_name, __name__)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value

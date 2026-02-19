@@ -1,0 +1,34 @@
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+skip-string-normalization = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = [
+  "api",
+  "config",
+  "contracts",
+  "inference",
+  "modules",
+  "perception",
+  "policy",
+  "scaffold",
+  "scanning",
+  "session",
+  "tracking",
+  "trace",
+  "validation",
+  "world",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

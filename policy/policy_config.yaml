@@ -1,0 +1,21 @@
+# Project policy (STAGE 8)
+# NOTE: This file is intended to be edited per-project/site.
+
+unknown_mode: forbid          # forbid | buffer | allow
+unknown_buffer_m: 0.50        # applied when unknown_mode=buffer (and also used as safety halo in forbid checks)
+min_clearance_m: 0.20         # min distance to OCCUPIED surfaces (ESDF)
+
+# Readiness gating
+readiness_observed_ratio_min: 0.35
+unknown_ratio_near_support_max: 0.25
+
+# Scaffold generator / validators tuning (MVP)
+scaffold_grid_step_m: 2.00
+scaffold_min_bay_m: 1.57
+scaffold_max_bay_m: 3.07
+scaffold_default_height_m: 4.00
+scaffold_deck_levels_m: [2.0, 4.0]
+
+access_min_corridor_m: 0.70
+stability_require_diagonals: true
+enforce_validators_strict: true

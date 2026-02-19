@@ -1,0 +1,59 @@
+Binary files base/tests/__pycache__/test_active_scanning.cpython-311-pytest-8.2.2.pyc and mod/tests/__pycache__/test_active_scanning.cpython-311-pytest-8.2.2.pyc differ
+Binary files base/tests/__pycache__/test_backend_perfection.cpython-311-pytest-8.2.2.pyc and mod/tests/__pycache__/test_backend_perfection.cpython-311-pytest-8.2.2.pyc differ
+Binary files base/tests/__pycache__/test_reprojection_check.cpython-311-pytest-8.2.2.pyc and mod/tests/__pycache__/test_reprojection_check.cpython-311-pytest-8.2.2.pyc differ
+diff -ruN base/tests/test_active_scanning.py mod/tests/test_active_scanning.py
+--- base/tests/test_active_scanning.py	1970-01-01 00:00:00.000000000 +0000
++++ mod/tests/test_active_scanning.py	2026-02-17 09:27:28.583961875 +0000
+@@ -0,0 +1,15 @@
++from modules.active_scanning import propose_views
++
++
++def test_propose_views_clusters_and_views():
++    suggestions = [
++        {"point": {"x": 0.0, "y": 0.0, "z": 0.0}, "reason": "model_missing", "severity": 1.0},
++        {"point": {"x": 0.2, "y": 0.1, "z": 0.0}, "reason": "depth_mismatch", "severity": 0.6},
++        {"point": {"x": 5.0, "y": 0.0, "z": 0.0}, "reason": "model_missing", "severity": 0.8},
++    ]
++
++    plan = propose_views(suggestions, current_pose=[1, 0, 0, 0, 0, 0, 1], max_views=2)
++    assert "clusters" in plan
++    assert "next_best_views" in plan
++    assert len(plan["clusters"]) >= 2
++    assert len(plan["next_best_views"]) == 2
+\ No newline at end of file
+diff -ruN base/tests/test_reprojection_check.py mod/tests/test_reprojection_check.py
+--- base/tests/test_reprojection_check.py	1970-01-01 00:00:00.000000000 +0000
++++ mod/tests/test_reprojection_check.py	2026-02-17 09:27:48.301105175 +0000
+@@ -0,0 +1,31 @@
++import numpy as np
++
++from modules.reprojection_check import run_reprojection_check
++from modules.voxel_world import VoxelWorld
++
++
++def test_reprojection_check_reports_model_missing_when_no_occupied():
++    vw = VoxelWorld(resolution=0.5)
++    w, h = 32, 32
++    depth_m = np.zeros((h, w), dtype=np.float32)
++    depth_m[:, :] = 2.0
++    depth_mm = (depth_m * 1000.0).astype(np.uint16)
++    depth_bytes = depth_mm.tobytes()
++
++    res = run_reprojection_check(
++        voxel_world=vw,
++        depth_bytes=depth_bytes,
++        width=w,
++        height=h,
++        fx=200.0,
++        fy=200.0,
++        cx_px=w / 2.0,
++        cy_px=h / 2.0,
++        camera_pose=[0, 0, 0, 0, 0, 0, 1],
++        sample_step_px=16,
++        mismatch_thresh_m=0.2,
++    )
++
++    assert res.sampled > 0
++    assert res.misses > 0
++    assert len(res.suggestions) > 0
+\ No newline at end of file

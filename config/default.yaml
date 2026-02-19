@@ -1,0 +1,50 @@
+server:
+  host: "127.0.0.1"
+  port: 8000
+
+storage:
+  sessions_root: "sessions"
+
+world:
+  voxel_size_m: 0.20
+  tsdf_trunc_m: 0.40
+  min_clearance_m: 0.20
+
+tracking:
+  icp_enabled: true
+  icp_apply_correction: true
+  icp_max_correspondence_m: 0.20
+  icp_voxel_down_m: 0.06
+  icp_min_fitness_apply: 0.35
+  icp_max_rmse_apply: 0.06
+
+export:
+  env_mesh_format: "obj"
+  overlays:
+    occupancy_npz: true
+    occupancy_slice_png: true
+
+policy:
+  policy_yaml_path: null
+
+security:
+  # If empty => dev mode (no key required).
+  api_keys: []
+  audit_enabled: true
+
+rate_limit:
+  enabled: true
+  window_seconds: 60
+  max_requests: 240
+
+observability:
+  json_logs: true
+  metrics_enabled: true
+  otel_enabled: false
+  otel_service_name: "backend-ai"
+  otel_exporter_otlp_endpoint: null
+
+retention:
+  enabled: true
+  max_age_days: 14
+  cleanup_interval_minutes: 60

@@ -6,6 +6,15 @@ WorldGeometry — фасад, который использует main.py.
 import numpy as np
 import math
 from typing import List, Dict, Tuple, Optional
+from modules.layher_standards import snap_to_layher_grid, validate_scaffold_dimensions
+
+
+def snap_to_grid(value: float, component_type: str) -> float:
+    return snap_to_layher_grid(value, component_type)
+
+
+def validate_dimensions(nodes, beams):
+    return validate_scaffold_dimensions(nodes, beams)
 
 
 class GeometryUtils:
