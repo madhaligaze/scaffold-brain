@@ -7,10 +7,15 @@ import trimesh
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from export.overlays_export import export_clearance_violations_glb, export_unknown_heatmap_glb
+from export.overlays_export import (
+    export_clearance_violations_glb,
+    export_occupancy_npz,
+    export_occupancy_slice_png,
+    export_unknown_heatmap_glb,
+)
 from policy.unknown_space import apply_unknown_policy
 from scanning.next_best_view import generate_scan_plan
-from scanning.readiness import compute_readiness
+from scanning.readiness import compute_readiness, compute_readiness_metrics
 from scaffold.bom import bom_from_elements
 from scaffold.repair import repair_elements
 from scaffold.search import search_scaffolds
@@ -143,12 +148,16 @@ def _run_scaffold_pipeline(state, session_id: str, *, strict: bool | None = None
         stride=2,
         max_voxels=25000,
     )
+    export_occupancy_npz(world, world_dir / "occupancy.npz")
+    export_occupancy_slice_png(world, world_dir / "occupancy_z.png", axis="z", frac=0.2)
 
     base_world = f"/sessions/{session_id}/world/{rev_id}"
     base_exports = f"/sessions/{session_id}/exports/{rev_id}"
     scene_bundle = {
         "session_id": session_id,
         "rev_id": rev_id,
+        # Legacy compat for older clients/tests that still expect env_mesh.path.
+        "env_mesh": {"path": f"{base_world}/env_mesh.glb"},
         "env": {
             "mesh_obj_url": f"{base_world}/env_mesh.obj",
             "mesh_glb_url": f"{base_world}/env_mesh.glb",
@@ -156,6 +165,10 @@ def _run_scaffold_pipeline(state, session_id: str, *, strict: bool | None = None
             "world_state_url": f"{base_world}/world_state.json",
             "trace_url": f"{base_world}/trace.json",
             "trace_ndjson_url": f"{base_world}/trace.ndjson",
+        },
+        "overlay_files": {
+            "occupancy": {"npz": {"path": f"{base_world}/occupancy.npz"}},
+            "occupancy_slice": {"png": {"path": f"{base_world}/occupancy_z.png"}},
         },
         "ui": {
             "bundle_version": "1.2",
@@ -254,21 +267,88 @@ def plan_scaffold(request: Request, payload: PlanPayload) -> dict[str, Any]:
 
 @router.post("/session/{session_id}/request_scaffold")
 def request_scaffold_compat(request: Request, session_id: str) -> dict[str, Any]:
-    """Compatibility endpoint expected by tests and Android client."""
+    """Compatibility endpoint expected by tests and Android client.
+
+    Release intent:
+      - Keep the strict planning gate on /planning/request_scaffold.
+      - Make this compat endpoint stable for e2e smoke: return 200 and produce an export bundle
+        whenever we have at least one frame, even if readiness is not fully satisfied.
+      - Return readiness diagnostics so Android / QA can explain why the scan would normally be blocked.
+    """
     state = request.app.state.runtime
     world = state.get_world(session_id)
     anchors = state.anchors.get(session_id, [])
 
     ready, score, reasons = compute_readiness(world, anchors, state.policy)
-    if not ready:
+    readiness_metrics = compute_readiness_metrics(world, anchors, state.policy)
+    observed_ratio = float(readiness_metrics.get("observed_ratio", 0.0) or 0.0)
+
+    # If we have not received any frames yet, still block - nothing to plan from.
+    frames = int(world.metrics.get("frames", 0) or 0)
+    if frames <= 0:
         scan_plan = _make_scan_plan(world, anchors)
         raise HTTPException(
             status_code=409,
-            detail={"status": "NEEDS_SCAN", "score": float(score), "reasons": reasons, "scan_plan": scan_plan},
+            detail={
+                "status": "NO_FRAMES",
+                "score": float(score),
+                "reasons": ["NO_FRAMES"],
+                "scan_plan": scan_plan,
+                "readiness_metrics": readiness_metrics,
+            },
+        )
+
+    # Hard guard for clearly non-scanned sessions (e.g. empty/invalid depth frame):
+    # keep compat endpoint useful but still return explicit NEEDS_SCAN when we literally
+    # have no observed geometry yet.
+    if not ready and observed_ratio <= 0.0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "status": "NEEDS_SCAN",
+                "score": float(score),
+                "reasons": reasons,
+                "scan_plan": _make_scan_plan(world, anchors),
+                "readiness_metrics": readiness_metrics,
+            },
+        )
+
+    # Compat relaxation: do NOT fail with 409 for typical scan-coverage issues.
+    # We still return diagnostics so client can show "needs more scan" hints.
+    relaxed = False
+    if not ready:
+        relaxed = True
+        trace = state.traces.setdefault(session_id, [])
+        add_trace_event(
+            trace,
+            "compat_readiness_relaxed",
+            {"score": float(score), "reasons": list(reasons), "metrics": readiness_metrics},
         )
 
     elements, rev_id, scene_bundle = _run_scaffold_pipeline(state, session_id, strict=False)
-    return {"status": "ok", "session_id": session_id, "revision_id": rev_id, "scaffold": elements, "scene_bundle": scene_bundle}
+
+    resp: dict[str, Any] = {
+        "status": "ok",
+        "session_id": session_id,
+        "revision_id": rev_id,
+        "scaffold": elements,
+        "scene_bundle": scene_bundle,
+        "readiness": {
+            "ready": bool(ready),
+            "score": float(score),
+            "reasons": reasons,
+            "readiness_metrics": readiness_metrics,
+            "relaxed": bool(relaxed),
+        },
+    }
+    if relaxed:
+        resp["compat_warnings"] = {
+            "status": "NEEDS_SCAN",
+            "score": float(score),
+            "reasons": reasons,
+            "scan_plan": _make_scan_plan(world, anchors),
+        }
+    return resp
 
 
 @router.get("/session/{session_id}/scan_plan")
