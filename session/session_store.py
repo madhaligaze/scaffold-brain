@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from session.artifacts import ensure_dirs, save_bytes, save_json
+from session.artifacts import ensure_dirs, save_bytes, save_json, prune_dir_by_age, prune_ndjson_tail
 from trace.decision_trace import trace_to_ndjson_bytes
 
 
@@ -43,6 +43,9 @@ class SessionStore:
         kept = 0
         for d in self.root.iterdir():
             if not d.is_dir():
+                continue
+            if d.name.startswith("_"):
+                kept += 1
                 continue
             try:
                 mtime = float(d.stat().st_mtime)
@@ -131,3 +134,44 @@ class SessionStore:
                 out.append(d.name)
         out.sort()
         return out
+
+
+    def global_root(self) -> Path:
+        return ensure_dirs(self.root / "_global")
+
+    def global_telemetry_dir(self) -> Path:
+        return ensure_dirs(self.global_root() / "telemetry")
+
+    def prune_telemetry(
+        self,
+        *,
+        max_age_days: int = 14,
+        max_file_bytes: int = 5_000_000,
+        max_lines: int = 20_000,
+    ) -> dict[str, int]:
+        deleted = 0
+        kept = 0
+
+        gdir = self.global_telemetry_dir()
+        res = prune_dir_by_age(gdir, max_age_days=max_age_days, include_files=True)
+        deleted += res.get("deleted", 0)
+        kept += res.get("kept", 0)
+        for p in [gdir / "crash_reports.ndjson", gdir / "client_reports.ndjson"]:
+            out = prune_ndjson_tail(p, max_bytes=max_file_bytes, max_lines=max_lines)
+            kept += out.get("kept_lines", 0)
+            deleted += out.get("dropped_lines", 0)
+
+        for d in self.root.iterdir():
+            if not d.is_dir() or d.name.startswith("_"):
+                continue
+            tdir = d / "telemetry"
+            if not tdir.exists():
+                continue
+            res = prune_dir_by_age(tdir, max_age_days=max_age_days, include_files=True)
+            deleted += res.get("deleted", 0)
+            kept += res.get("kept", 0)
+            out = prune_ndjson_tail(tdir / "events.ndjson", max_bytes=max_file_bytes, max_lines=max_lines)
+            kept += out.get("kept_lines", 0)
+            deleted += out.get("dropped_lines", 0)
+
+        return {"deleted": int(deleted), "kept": int(kept)}

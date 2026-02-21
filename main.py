@@ -44,7 +44,14 @@ async def lifespan(app: FastAPI):
 
             def _run_once():
                 try:
-                    return app.state.runtime.store.prune_sessions(max_age_days=max_age_days)
+                    store = app.state.runtime.store
+                    tel_enabled = True if retention is None else bool(getattr(retention, "telemetry_enabled", True))
+                    if tel_enabled:
+                        tel_age = int(getattr(retention, "telemetry_max_age_days", max_age_days))
+                        tel_max_bytes = int(getattr(retention, "telemetry_max_file_bytes", 5_000_000))
+                        tel_max_lines = int(getattr(retention, "telemetry_max_lines", 20_000))
+                        store.prune_telemetry(max_age_days=tel_age, max_file_bytes=tel_max_bytes, max_lines=tel_max_lines)
+                    return store.prune_sessions(max_age_days=max_age_days)
                 except Exception:
                     return {"deleted": 0, "kept": 0}
 

@@ -73,8 +73,16 @@ class ObservabilityCfg(BaseModel):
 
 class RetentionCfg(BaseModel):
     enabled: bool = True
+    # Whole-session retention (sessions/<sid>/...) by directory mtime.
     max_age_days: int = 14
     cleanup_interval_minutes: int = 60
+
+    # Telemetry retention/limits (sessions/_global/telemetry + sessions/<sid>/telemetry).
+    telemetry_enabled: bool = True
+    telemetry_max_age_days: int = 14
+    telemetry_cleanup_interval_minutes: int = 60
+    telemetry_max_file_bytes: int = 5_000_000
+    telemetry_max_lines: int = 20_000
 
 
 class AppConfig(BaseModel):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 UNKNOWN = 0
@@ -19,7 +21,9 @@ class OccupancyGrid:
         self,
         *,
         voxel_size: float = 0.2,
-        dims: tuple[int, int, int] = (128, 128, 64),
+        # Use a cubic grid by default to avoid z-mid indexing failures in downstream
+        # ESDF/mesh logic and tests.
+        dims: tuple[int, int, int] = (128, 128, 128),
         origin: tuple[float, float, float] = (-12.8, -12.8, -1.0),
     ) -> None:
         self.voxel_size = float(voxel_size)
@@ -37,9 +41,23 @@ class OccupancyGrid:
         shp = np.asarray(self.grid.shape, dtype=np.int32)
         return bool(np.all(idx >= 0) and np.all(idx < shp))
 
-    def _touch(self, idx: np.ndarray, new_state: int) -> None:
+    def in_bounds(self, *args) -> bool:
+        # Public helper expected by tests and validators.
+        try:
+            if len(args) == 1:
+                a = np.asarray(args[0], dtype=np.int32).reshape(3)
+                return self._in_bounds(a)
+            if len(args) == 3:
+                x, y, z = int(args[0]), int(args[1]), int(args[2])
+                sx, sy, sz = self.grid.shape
+                return 0 <= x < int(sx) and 0 <= y < int(sy) and 0 <= z < int(sz)
+        except Exception:
+            return False
+        return False
+
+    def _touch(self, idx: np.ndarray, new_state: int) -> bool:
         if not self._in_bounds(idx):
-            return
+            return False
         x, y, z = int(idx[0]), int(idx[1]), int(idx[2])
         prev = int(self.grid[x, y, z])
         if prev in (FREE, OCCUPIED) and new_state in (FREE, OCCUPIED) and prev != new_state:
@@ -47,6 +65,7 @@ class OccupancyGrid:
         self.grid[x, y, z] = np.uint8(new_state)
         if self.weights[x, y, z] < np.uint16(65535):
             self.weights[x, y, z] = np.uint16(int(self.weights[x, y, z]) + 1)
+        return True
 
     def integrate_depth(self, depth_u16: np.ndarray, intr: dict, pose: dict, depth_scale: float) -> None:
         # Mark FREE along ray, OCCUPIED at surface (cheap/fast, conservative)
@@ -88,6 +107,43 @@ class OccupancyGrid:
                 idx2 = ((p_w - self.origin) / self.voxel_size).astype(np.int32)
                 self._touch(idx2, OCCUPIED)
 
+    def occupied_points(
+        self,
+        *,
+        box_min: list[float] | None = None,
+        box_max: list[float] | None = None,
+        max_points: int = 50_000,
+    ) -> list[list[float]]:
+        """Return centers of occupied voxels as point list (world coords)."""
+        g = self.grid
+        if box_min is not None and box_max is not None:
+            bmin = np.asarray(box_min, dtype=np.float32).reshape(3)
+            bmax = np.asarray(box_max, dtype=np.float32).reshape(3)
+            lo = np.minimum(bmin, bmax)
+            hi = np.maximum(bmin, bmax)
+            i0 = ((lo - self.origin) / self.voxel_size).astype(np.int32)
+            i1 = ((hi - self.origin) / self.voxel_size).astype(np.int32) + 1
+            i0 = np.maximum(i0, 0)
+            i1 = np.minimum(i1, np.asarray(g.shape, dtype=np.int32))
+            if np.any(i1 <= i0):
+                return []
+            sub = g[i0[0]:i1[0], i0[1]:i1[1], i0[2]:i1[2]]
+            idx = np.argwhere(sub == OCCUPIED)
+            if idx.size == 0:
+                return []
+            idx = idx + i0.reshape(1, 3)
+        else:
+            idx = np.argwhere(g == OCCUPIED)
+            if idx.size == 0:
+                return []
+
+        if max_points > 0 and idx.shape[0] > int(max_points):
+            step = int(max(1, idx.shape[0] // int(max_points)))
+            idx = idx[::step]
+
+        pts = self.origin.reshape(1, 3) + (idx.astype(np.float32) + 0.5) * float(self.voxel_size)
+        return pts.tolist()
+
     def query(self, points: list[list[float]]) -> list[int]:
         pts = np.array(points, dtype=np.float32)
         idx = ((pts - self.origin) / self.voxel_size).astype(np.int32)
@@ -107,7 +163,17 @@ class OccupancyGrid:
             f = int(np.sum(g == FREE))
             o = int(np.sum(g == OCCUPIED))
             tot = int(g.size)
-            return {"unknown": u, "free": f, "occupied": o, "total": tot}
+            observed = int(f + o)
+            obs_ratio = float(observed) / float(tot) if tot > 0 else 0.0
+            unk_ratio = float(u) / float(tot) if tot > 0 else 0.0
+            return {
+                "unknown": u,
+                "free": f,
+                "occupied": o,
+                "total": tot,
+                "observed_ratio": float(obs_ratio),
+                "unknown_ratio": float(unk_ratio),
+            }
 
         occ = {"unknown": 0, "free": 0, "occupied": 0, "total": 0}
         for p in points:
@@ -121,6 +187,13 @@ class OccupancyGrid:
             occ["free"] += int(np.sum(sub == FREE))
             occ["occupied"] += int(np.sum(sub == OCCUPIED))
             occ["total"] += int(sub.size)
+        tot = int(occ.get("total", 0) or 0)
+        u = int(occ.get("unknown", 0) or 0)
+        f = int(occ.get("free", 0) or 0)
+        o = int(occ.get("occupied", 0) or 0)
+        observed = int(f + o)
+        occ["observed_ratio"] = float(observed) / float(tot) if tot > 0 else 0.0
+        occ["unknown_ratio"] = float(u) / float(tot) if tot > 0 else 0.0
         return occ
 
     def stats_aabb(self, box_min: list[float], box_max: list[float]) -> dict:
@@ -153,3 +226,67 @@ class OccupancyGrid:
             out[f"[{lo},{hi})"] = int(np.sum((w >= lo) & (w < hi)))
         out[f"[{int(edges[-1])},inf)"] = int(np.sum(w >= int(edges[-1])))
         return out
+
+    def integrate_pointcloud_rays(
+        self,
+        cam_pos_world: np.ndarray,
+        points_world: np.ndarray,
+        *,
+        max_points: int = 6000,
+        stride: int | None = None,
+        max_range_m: float = 8.0,
+    ) -> dict:
+        """
+        Lightweight occupancy integration from a sparse pointcloud (no depth image).
+
+        For each point: mark FREE along the ray from camera to point, and OCCUPIED at the point.
+        This is intentionally conservative and is primarily used to stabilize readiness metrics on
+        pipelines that do not provide depth frames.
+        """
+        if points_world is None:
+            return {"touched": 0, "used_points": 0}
+
+        cam = np.asarray(cam_pos_world, dtype=np.float64).reshape(3)
+        pts = np.asarray(points_world, dtype=np.float64).reshape(-1, 3)
+        if pts.shape[0] == 0:
+            return {"touched": 0, "used_points": 0}
+
+        # Subsample deterministically to cap work.
+        n = int(pts.shape[0])
+        if stride is None:
+            stride = max(1, n // int(max_points)) if n > max_points else 1
+        pts = pts[:: int(stride)]
+        if pts.shape[0] > int(max_points):
+            pts = pts[: int(max_points)]
+
+        voxel = float(self.voxel_size)
+        step_m = max(0.06, voxel * 0.75)
+
+        touched = 0
+        for p in pts:
+            v = p - cam
+            d = float(np.linalg.norm(v))
+            if d < 1e-6:
+                continue
+            if d > float(max_range_m):
+                # Cap far points - we only need local observation.
+                p = cam + v * (float(max_range_m) / d)
+                v = p - cam
+                d = float(max_range_m)
+
+            # Sample along the ray. Avoid marking the endpoint as FREE.
+            steps = int(max(1, math.floor(d / step_m)))
+            for i in range(steps):
+                t = float(i) / float(steps)
+                q = cam + v * t
+                idx = ((q - self.origin) / self.voxel_size).astype(np.int32)
+                ok = self._touch(idx, FREE)
+                if ok:
+                    touched += 1
+
+            # Mark the endpoint as OCCUPIED.
+            idx2 = ((p - self.origin) / self.voxel_size).astype(np.int32)
+            if self._touch(idx2, OCCUPIED):
+                touched += 1
+
+        return {"touched": int(touched), "used_points": int(pts.shape[0]), "stride": int(stride)}

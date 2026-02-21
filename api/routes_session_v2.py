@@ -6,7 +6,7 @@ from pydantic import BaseModel, ValidationError
 from api.ingest import ingest_frame
 from contracts.frame_packet import AnchorPoint, FramePacketMeta
 from policy.unknown_space import apply_unknown_policy
-from scanning.readiness import compute_readiness
+from scanning.readiness import compute_readiness, compute_readiness_metrics
 from validation.frame_validation import validate_and_normalize_frame_meta
 from world.mesh_export import env_mesh_obj_bytes
 
@@ -52,15 +52,40 @@ async def post_frame(
     try:
         meta_payload = FramePacketMeta.model_validate_json(await meta.read())
     except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Tests expect a structured detail object, not a string.
+        raise HTTPException(
+            status_code=400,
+            detail={"status": "INVALID_META", "errors": exc.errors()},
+        ) from exc
 
     depth_bytes = await depth.read() if depth else None
     pointcloud_bytes = await pointcloud.read() if pointcloud else None
 
     if meta_payload.depth_meta and depth_bytes is None:
-        raise HTTPException(status_code=400, detail="depth file is required when depth_meta is provided")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": "INVALID_FRAMEPACKET",
+                "errors": [{"field": "depth", "code": "MISSING", "msg": "depth file is required when depth_meta is provided"}],
+            },
+        )
     if meta_payload.pointcloud_meta and pointcloud_bytes is None:
-        raise HTTPException(status_code=400, detail="pointcloud file is required when pointcloud_meta is provided")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": "INVALID_FRAMEPACKET",
+                "errors": [
+                    {"field": "pointcloud", "code": "MISSING", "msg": "pointcloud file is required when pointcloud_meta is provided"}
+                ],
+            },
+        )
+
+    # If neither depth nor pointcloud is present (and no meta declares them), reject early.
+    if (depth_bytes is None) and (pointcloud_bytes is None) and (meta_payload.depth_meta is None) and (meta_payload.pointcloud_meta is None):
+        raise HTTPException(
+            status_code=400,
+            detail={"status": "NEEDS_GEOMETRY", "msg": "either depth or pointcloud is required"},
+        )
 
     session_id = meta_payload.session_id
     rgb_bytes = await rgb.read()
@@ -124,12 +149,29 @@ def lock_session(request: Request, payload: LockPayload) -> dict:
     }
 
 
+@router.get("/session/{session_id}/readiness")
+def session_readiness(request: Request, session_id: str) -> dict:
+    state = request.app.state.runtime
+    world = state.get_world(session_id)
+    anchors = state.anchors.get(session_id, [])
+    ready, score, reasons = compute_readiness(world, anchors, state.policy)
+    metrics = compute_readiness_metrics(world, anchors, state.policy)
+    return {
+        "session_id": session_id,
+        "ready": ready,
+        "score": score,
+        "reasons": reasons,
+        "readiness_metrics": metrics,
+    }
+
+
 @router.get("/session/{session_id}/status")
 def session_status(request: Request, session_id: str) -> dict:
     state = request.app.state.runtime
     world = state.get_world(session_id)
     anchors = state.anchors.get(session_id, [])
     ready, score, reasons = compute_readiness(world, anchors, state.policy)
+    readiness_metrics = compute_readiness_metrics(world, anchors, state.policy)
     unknown = apply_unknown_policy(world, anchors, state.policy)
     sg = state.get_scene_graph(session_id)
     return {
@@ -137,6 +179,7 @@ def session_status(request: Request, session_id: str) -> dict:
         "ready": ready,
         "score": score,
         "reasons": reasons,
+        "readiness_metrics": readiness_metrics,
         "metrics": world.serialize_state(),
         "unknown_policy": unknown,
         "perception_unavailable": state.perception_unavailable,
@@ -144,5 +187,5 @@ def session_status(request: Request, session_id: str) -> dict:
         "geometry_unavailable": not bool(world.metrics.get("tsdf_available", True)),
         "geometry_reason": world.metrics.get("tsdf_reason"),
         "policy_source": getattr(state, "policy_source", None)
-        or (getattr(state, "config", {}) or {}).get("policy_source"),
+        or getattr(getattr(state, "config", None), "policy_source", None),
     }

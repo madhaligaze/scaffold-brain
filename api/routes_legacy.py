@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+
+import numpy as np
 import time
 from typing import Any
 from uuid import uuid4
@@ -69,7 +71,19 @@ def _decode_base64(value: str | None) -> bytes | None:
     if not value:
         return None
     try:
-        return base64.b64decode(value)
+        v = value.strip()
+
+        # Accept data-URL payloads, e.g. "data:image/jpeg;base64,AAAA...".
+        # Android normally sends raw base64, but some clients (or future changes) may wrap it.
+        if v.startswith("data:") and "," in v:
+            v = v.split(",", 1)[1].strip()
+
+        # Be tolerant to newlines/spaces and urlsafe base64 variants.
+        v = v.replace("\n", "").replace("\r", "").replace(" ", "")
+        try:
+            return base64.b64decode(v)
+        except Exception:
+            return base64.urlsafe_b64decode(v)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid base64 payload: {exc}") from exc
 
@@ -90,10 +104,15 @@ def _build_meta(session_id: str, payload: LegacyStreamPayload) -> tuple[dict, by
     pointcloud_bytes = None
     pointcloud_meta = None
     if pc is not None:
-        # Legacy JSON point cloud is stored as UTF-8 JSON bytes for artifact persistence, so the new pipeline
-        # can track original content without assuming a binary schema.
-        pointcloud_bytes = json.dumps(pc).encode("utf-8")
-        pointcloud_meta = {"format": "xyz", "frame": "world"}
+        # Prefer binary float32 XYZ for downstream occupancy warm-up / readiness metrics.
+        # Fall back to JSON if payload shape is unexpected.
+        try:
+            arr = np.asarray(pc, dtype=np.float32).reshape(-1, 3)
+            pointcloud_bytes = arr.astype(np.float32).tobytes()
+            pointcloud_meta = {"format": "xyz", "frame": "world"}
+        except Exception:
+            pointcloud_bytes = json.dumps(pc).encode("utf-8")
+            pointcloud_meta = {"format": "xyz", "frame": "world"}
 
     missing: list[str] = []
     for key in ("fx", "fy", "cx", "cy", "width", "height"):
@@ -117,10 +136,11 @@ def _build_meta(session_id: str, payload: LegacyStreamPayload) -> tuple[dict, by
 
     depth_meta = None
     if depth_bytes is not None:
+        depth_scale = payload.depth_scale_m_per_unit or payload.depth_scale or 0.001
         depth_meta = {
             "width": int(payload.depth_width or intrinsics["width"]),
             "height": int(payload.depth_height or intrinsics["height"]),
-            "scale_m_per_unit": float(payload.depth_scale or 0.001),
+            "scale_m_per_unit": float(depth_scale),
             "encoding": "uint16",
         }
 

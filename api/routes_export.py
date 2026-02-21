@@ -19,7 +19,7 @@ def export_latest(request: Request, session_id: str):
         exports = state.store.list_exports(session_id)
         rev = exports[-1] if exports else None
     if not rev:
-        raise HTTPException(status_code=404, detail={"status": "NO_EXPORT", "msg": "No exported bundle yet"})
+        raise HTTPException(status_code=409, detail={"status": "NO_EXPORT", "msg": "No exported bundle yet"})
 
     bundle = state.store.load_export(session_id, rev)
     if bundle is None:
