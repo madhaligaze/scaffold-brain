@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 import trimesh
 
+from modules.mesh_builder import ScaffoldMeshBuilder
+
 
 def env_mesh_obj_bytes(world_model) -> bytes:
     fn_b = getattr(world_model, "export_env_mesh_obj_bytes", None)
@@ -47,4 +49,13 @@ def env_mesh_glb_bytes(world_model) -> bytes:
     mesh = trimesh.Trimesh(vertices=v, faces=f, process=False)
     scene = trimesh.Scene()
     scene.add_geometry(mesh, node_name="environment_mesh")
+    return scene.export(file_type="glb")
+
+
+def scaffold_to_glb_bytes(elements: list[dict]) -> bytes:
+    builder = ScaffoldMeshBuilder()
+    mesh = builder.build_from_elements(elements or [])
+    scene = trimesh.Scene()
+    if mesh is not None and getattr(mesh, "vertices", None) is not None and len(mesh.vertices) > 0:
+        scene.add_geometry(mesh, node_name="scaffold")
     return scene.export(file_type="glb")

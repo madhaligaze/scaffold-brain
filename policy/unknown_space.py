@@ -233,6 +233,9 @@ def apply_unknown_policy(world, anchors, policy) -> dict[str, Any]:
 
     Returns a serializable policy decision for status endpoints.
     """
+    allowed_kinds = {"support", "boundary", "target"}
+    anchors = [a for a in (anchors or []) if a.get("kind") in allowed_kinds]
+
     cfg = UnknownPolicyConfig(
         mode=getattr(policy, "unknown_mode", "buffer"),
         forbid_radius_m=float(getattr(policy, "unknown_forbid_radius_m", 0.35)),

@@ -20,6 +20,9 @@ class AnchorPayload(BaseModel):
 
 class LockPayload(BaseModel):
     session_id: str
+    selected_variant: str | None = None
+    measurements_json: str | None = None
+    manual_measurements: list[dict] = []
 
 
 @router.post("/session/create")
@@ -139,6 +142,11 @@ def lock_session(request: Request, payload: LockPayload) -> dict:
         env_mesh_bytes=env_mesh_bytes,
     )
     state.last_rev[payload.session_id] = rev_id
+    state.last_rev_meta[payload.session_id] = {
+        "selected_variant": payload.selected_variant,
+        "measurements_json": payload.measurements_json,
+        "manual_measurements": payload.manual_measurements,
+    }
     return {
         "session_id": payload.session_id,
         "rev_id": rev_id,

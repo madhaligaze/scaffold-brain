@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,83 @@ from pydantic import BaseModel, Field
 from session.artifacts import ensure_dirs, prune_ndjson_tail
 
 router = APIRouter(tags=["telemetry"])
+
+_URL_RE = re.compile(r"(https?://[^\s]+)")
+
+
+def _sanitize_url(text: str) -> str:
+    # Strip query params to avoid leaking tokens/PII
+    def repl(m):
+        url = m.group(1)
+        if "?" in url:
+            url = url.split("?", 1)[0] + "?<redacted>"
+        return url
+
+    return _URL_RE.sub(repl, text)
+
+
+def _sanitize_report(payload: dict[str, Any]) -> dict[str, Any]:
+    """Server-side sanitize as last line of defence.
+
+    - Drop large/nested data
+    - Truncate strings
+    - Remove potentially sensitive keys
+    """
+    deny = (
+        "rgb",
+        "depth",
+        "pose",
+        "intrinsics",
+        "point_cloud",
+        "anchors",
+        "position",
+        "quaternion",
+        "glb",
+        "obj",
+        "file",
+        "files",
+        "image",
+        "bitmap",
+        "base64",
+        "url",
+        "server",
+        "base_url",
+    )
+
+    def clean_obj(o, depth=0):
+        if depth > 3:
+            return None
+        if o is None:
+            return None
+        if isinstance(o, (int, float, bool)):
+            return o
+        if isinstance(o, str):
+            s = _sanitize_url(o)
+            return s[:2048]
+        if isinstance(o, list):
+            if len(o) > 50:
+                return None
+            if all(isinstance(x, (int, float)) for x in o):
+                return None
+            out = []
+            for x in o:
+                cx = clean_obj(x, depth + 1)
+                if cx is not None:
+                    out.append(cx)
+            return out[:50]
+        if isinstance(o, dict):
+            out = {}
+            for k, v in o.items():
+                ks = str(k).lower()
+                if any(d in ks for d in deny):
+                    continue
+                cv = clean_obj(v, depth + 1)
+                if cv is not None:
+                    out[str(k)[:64]] = cv
+            return out
+        return None
+
+    return clean_obj(payload, 0) or {}
 
 
 class LogDeviceInfo(BaseModel):
@@ -122,12 +200,34 @@ def post_session_report(request: Request, session_id: str, payload: CrashEnvelop
 
 @router.post("/telemetry/client_report")
 def post_client_report(request: Request, payload: ClientReportEnvelope) -> dict:
-    """Append a crash/diagnostics envelope into sessions/_global/telemetry/client_reports.ndjson."""
+    """Append a crash/diagnostics envelope into sessions/_global/telemetry/client_reports.ndjson.
+
+    Release hardening:
+      - Rate limit to avoid DDOS from bad networks.
+      - Sanitize payload server-side (defence-in-depth).
+    """
     state = request.app.state.runtime
+
+    # Rate limit per session+device+client.
+    sid = payload.session_id or "global"
+    dev = (payload.device.model if payload.device else None) or "unknown_device"
+    host = getattr(getattr(request, "client", None), "host", None) or "unknown_host"
+    key = f"client_report:{sid}:{dev}:{host}"
+
+    # Burst 3, then ~1 per 90s.
+    allowed, retry_after = state.rate_limiter.allow(key, capacity=3.0, refill_per_sec=(1.0 / 90.0), cost=1.0)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={"status": "RATE_LIMIT", "retry_after_s": float(retry_after)},
+            headers={"Retry-After": str(int(max(1.0, retry_after)))},
+        )
+
     root: Path = state.store.global_telemetry_dir()
     path = ensure_dirs(root) / "client_reports.ndjson"
 
-    rec = payload.model_dump()
+    raw = payload.model_dump()
+    rec = _sanitize_report(raw)
     rec["ingested_at_ms"] = int(time.time() * 1000)
 
     try:

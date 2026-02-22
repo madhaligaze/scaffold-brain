@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import json
 
+from dataclasses import replace
+
 import numpy as np
 import time
 from typing import Any
@@ -22,7 +24,7 @@ from scaffold.validators import collision_check
 from scanning.next_best_view import generate_scan_plan
 from scanning.readiness import compute_readiness
 from trace.decision_trace import add_trace_event
-from world.mesh_export import env_mesh_glb_bytes, env_mesh_obj_bytes
+from world.mesh_export import env_mesh_glb_bytes, env_mesh_obj_bytes, scaffold_to_glb_bytes
 from world.occupancy import OCCUPIED
 
 router = APIRouter(tags=["legacy"])
@@ -167,6 +169,7 @@ def legacy_start_session(request: Request):
     state.get_world(session_id)
     state.anchors[session_id] = []
     state.traces[session_id] = []
+    state.session_stats[session_id] = {"depth_frames_received": 0}
     return {"session_id": session_id, "status": "ok"}
 
 
@@ -197,7 +200,26 @@ def _legacy_stream_ingest(request: Request, session_id: str, payload: LegacyStre
     )
     world = state.get_world(session_id)
     anchors = state.anchors.get(session_id, [])
-    ready, score, reasons = compute_readiness(world, anchors, state.policy)
+    extra = getattr(payload, "__pydantic_extra__", None) or {}
+    depth_supported = extra.get("depth_supported")
+    depth_unavailable = bool(extra.get("depth_unavailable")) if "depth_unavailable" in extra else False
+
+    stats = state.session_stats.setdefault(session_id, {"depth_frames_received": 0})
+    if depth_bytes is not None:
+        stats["depth_frames_received"] = int(stats.get("depth_frames_received", 0) or 0) + 1
+    has_any_depth = int(stats.get("depth_frames_received", 0) or 0) > 0
+    no_depth_mode = (not has_any_depth) and (depth_bytes is None) and (depth_unavailable or (depth_supported is False))
+
+    policy_for_readiness = state.policy
+    if not has_any_depth:
+        try:
+            min_obs = float(getattr(state.policy, "readiness_observed_ratio_min", 0.1))
+            lowered = max(0.05, min_obs * 0.67)
+            policy_for_readiness = replace(state.policy, readiness_observed_ratio_min=lowered)
+        except Exception:
+            policy_for_readiness = state.policy
+
+    ready, score, reasons = compute_readiness(world, anchors, policy_for_readiness)
     if not ready and not anchors:
         try:
             occ = world.occupancy.stats()
@@ -218,6 +240,8 @@ def _legacy_stream_ingest(request: Request, session_id: str, payload: LegacyStre
     else:
         scan_plan = generate_scan_plan(world, anchors)
         instructions = []
+        if no_depth_mode:
+            instructions.append("Без Depth потребуется дольше сканировать (без depth occupancy прогревается из point cloud).")
         for item in scan_plan[:3]:
             note = item.get("note")
             instructions.append(f"Досканируйте: {note}" if note else "Сделайте обзор вокруг точки опоры")
@@ -228,8 +252,10 @@ def _legacy_stream_ingest(request: Request, session_id: str, payload: LegacyStre
             "ai_hints": {
                 "instructions": instructions,
                 "warnings": [str(reason) for reason in reasons],
+                "no_depth_mode": bool(no_depth_mode),
                 "quality_score": quality_score,
                 "is_ready": bool(ready),
+                "depth_frames_received": int(stats.get("depth_frames_received", 0) or 0),
             },
             "legacy_stream": True,
             "legacy_mode": "json_adapter",
@@ -265,11 +291,23 @@ def _legacy_element_to_android(element: dict[str, Any]) -> dict[str, Any]:
             start = [float(pos[0]), float(pos[1]), float(pos[2])]
             end = [float(pos[0]), float(pos[1]), float(pos[2])]
 
+    load_ratio = float(element.get("load_ratio") or element.get("load") or 0.0)
+    stress_color = element.get("stress_color") or element.get("color")
+    if not stress_color:
+        if load_ratio >= 0.8:
+            stress_color = "red"
+        elif load_ratio >= 0.5:
+            stress_color = "orange"
+        else:
+            stress_color = "green"
+
     return {
         "id": str(element.get("id", "")),
         "type": element_type,
         "start": [float(start[0]), float(start[1]), float(start[2])],
         "end": [float(end[0]), float(end[1]), float(end[2])],
+        "stress_color": stress_color,
+        "load_ratio": load_ratio,
         "meta": element.get("meta") or {},
     }
 
@@ -381,12 +419,25 @@ def legacy_model(request: Request, session_id: str):
         bundle["env_mesh"]["obj"] = {"path": f"sessions/{session_id}/world/{rev_id}/env_mesh.obj"}
         bundle["env_mesh"]["glb"] = {"path": env_glb_rel}
         bundle["bom"] = bom_from_elements(elements)
+        android_elements = [_legacy_element_to_android(el) for el in elements]
         state.store.save_export(session_id, rev_id, bundle)
+
+        try:
+            scaffold_glb = scaffold_to_glb_bytes(android_elements)
+            scaffold_rel = f"sessions/{session_id}/world/{rev_id}/scaffold.glb"
+            (world_dir / "scaffold.glb").write_bytes(scaffold_glb)
+            overlay_files["scaffold"] = {"glb": {"path": scaffold_rel}}
+            for layer in bundle.get("ui", {}).get("layers", []):
+                if layer.get("id") == "scaffold":
+                    layer["file"] = {"glb": {"path": scaffold_rel}}
+                    break
+            state.store.save_export(session_id, rev_id, bundle)
+        except Exception as e:
+            print(f"[warn] scaffold.glb generation failed: {e}")
 
         score_norm = float(score) if isinstance(score, (int, float)) else 0.0
         score_norm = score_norm / 100.0 if score_norm > 1.0 else score_norm
         safety_score = max(0, min(100, int(score_norm * 100) - 10 * len(violations)))
-        android_elements = [_legacy_element_to_android(el) for el in elements]
         unique_nodes = {tuple(e["start"]) for e in android_elements} | {tuple(e["end"]) for e in android_elements}
         return {
             "status": "OK",
@@ -419,7 +470,7 @@ def legacy_model(request: Request, session_id: str):
                     "safety_score": 0,
                     "ai_critique": [f"MODEL_ADAPTER_ERROR: {exc}"],
                     "elements": [],
-                    "full_structure": {"elements": []},
+                    "full_structure": [],
                     "stats": {
                         "total_nodes": 0,
                         "total_beams": 0,

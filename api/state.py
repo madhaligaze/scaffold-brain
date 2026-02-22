@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from api.rate_limit import RateLimiter
 from config.load_config import AppConfig, find_default_config, load_app_config
 from perception.scene_graph import SceneGraph
 from policy.load_policy import find_policy_file, load_policy_from_yaml
@@ -27,12 +28,19 @@ class RuntimeState:
     anchors: dict[str, list[dict]] = field(default_factory=dict)
     traces: dict[str, list[dict]] = field(default_factory=dict)
     last_rev: dict[str, str] = field(default_factory=dict)
+    last_rev_meta: dict[str, dict] = field(default_factory=dict)
     restored_revision_state: dict[str, dict] = field(default_factory=dict)
 
     # STAGE A: monotonic timestamp tracking per session
     last_timestamp: dict[str, float] = field(default_factory=dict)
 
+    # Session-level counters for adaptive readiness heuristics.
+    session_stats: dict[str, dict] = field(default_factory=dict)
+
     perception_unavailable: bool = False
+
+    # Telemetry/report rate limiting (in-memory)
+    rate_limiter: RateLimiter = field(default_factory=RateLimiter)
 
     @classmethod
     def build(cls) -> "RuntimeState":

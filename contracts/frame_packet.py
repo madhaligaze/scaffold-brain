@@ -148,6 +148,6 @@ class AnchorPoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    kind: Literal["support", "boundary", "target"]
+    kind: Literal["support", "boundary", "target", "point"]
     position: list[float]
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)

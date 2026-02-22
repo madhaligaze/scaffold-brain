@@ -13,7 +13,7 @@ def _layers(overlays: dict[str, Any]) -> dict[str, Any]:
     files = overlays.get("overlay_files") or {}
     layers = [
         {"id": "environment_mesh", "label": "Environment mesh", "kind": "mesh", "default_on": True},
-        {"id": "scaffold", "label": "Scaffold", "kind": "model", "default_on": True},
+        {"id": "scaffold", "label": "Scaffold", "kind": "model", "default_on": True, "file": files.get("scaffold")},
         {"id": "unknown_heatmap", "label": "Unknown space", "kind": "overlay", "default_on": False, "file": files.get("unknown_heatmap")},
         {"id": "clearance_violations", "label": "Clearance violations", "kind": "overlay", "default_on": True, "file": files.get("clearance_violations")},
         {"id": "scan_hints", "label": "Scan hints", "kind": "overlay", "default_on": True, "file": files.get("scan_hints")},

@@ -3,6 +3,14 @@ from __future__ import annotations
 from scanning.coverage import compute_work_aabb
 
 
+def _min_top_k(values: list[int], k: int) -> int:
+    if not values:
+        return 0
+    k = max(1, min(int(k), len(values)))
+    vals = sorted([int(v) for v in values], reverse=True)
+    return int(min(vals[:k]))
+
+
 def compute_readiness(world_model, anchors: list[dict], policy) -> tuple[bool, float, list[str]]:
     """Readiness gate used by planning endpoints and tests.
 
@@ -14,7 +22,9 @@ def compute_readiness(world_model, anchors: list[dict], policy) -> tuple[bool, f
     If no anchors are present, fall back to global occupancy stats so synthetic
     tests can still run the export pipeline.
     """
-    aabb = compute_work_aabb(anchors, padding_m=1.0)
+    supports = [a for a in anchors if a.get("kind") == "support" and isinstance(a.get("position"), (list, tuple))]
+    anchors_for_work = supports if supports else anchors
+    aabb = compute_work_aabb(anchors_for_work, padding_m=1.0)
     reasons: list[str] = []
     if aabb is None:
         st = world_model.occupancy.stats()
@@ -51,8 +61,7 @@ def compute_readiness(world_model, anchors: list[dict], policy) -> tuple[bool, f
     if observed_ratio < min_obs:
         reasons.append(f"LOW_OBSERVED_RATIO:{observed_ratio:.3f}<{min_obs:.3f}")
 
-    # View diversity around supports/anchors: use WorldModel.anchor_view_count (azimuth bins).
-    supports = [a for a in anchors if a.get("kind") == "support" and isinstance(a.get("position"), (list, tuple))]
+    # View diversity around supports: use WorldModel.anchor_view_count (azimuth bins).
     min_views = int(getattr(policy, "min_views_per_anchor", 3) or 3)
     view_counts: list[int] = []
     if supports and hasattr(world_model, "anchor_view_count"):
@@ -62,7 +71,9 @@ def compute_readiness(world_model, anchors: list[dict], policy) -> tuple[bool, f
                 view_counts.append(int(world_model.anchor_view_count(pos, bins_deg=45.0)))
             except Exception:
                 view_counts.append(0)
-    view_div = int(min(view_counts) if view_counts else 0)
+    top_k = int(getattr(policy, "readiness_view_top_k", 3) or 3)
+    view_div = _min_top_k(view_counts, k=top_k)
+    view_div_min = int(min(view_counts) if view_counts else 0)
     if supports and view_div < min_views:
         reasons.append(f"LOW_VIEW_DIVERSITY:{view_div}<{min_views}")
 
@@ -90,9 +101,15 @@ def compute_readiness_metrics(world_model, anchors: list[dict], policy) -> dict:
       - viewpoints
       - thresholds (mins)
     """
-    aabb = compute_work_aabb(anchors, padding_m=1.0)
+    supports = [a for a in anchors if a.get("kind") == "support" and isinstance(a.get("position"), (list, tuple))]
+    points = [a for a in anchors if a.get("kind") == "point" and isinstance(a.get("position"), (list, tuple))]
+    anchors_for_work = supports if supports else anchors
+    aabb = compute_work_aabb(anchors_for_work, padding_m=1.0)
     metrics: dict = {
-        "anchor_count": int(len(anchors or [])),
+        "anchor_count": int(len(supports or [])),
+        "support_count": int(len(supports or [])),
+        "point_count": int(len(points or [])),
+        "total_points": int(len(anchors or [])),
         "observed_ratio": 0.0,
         "view_diversity": 0,
         "viewpoints": int(world_model.metrics.get("viewpoints", 0) or 0),
@@ -115,7 +132,6 @@ def compute_readiness_metrics(world_model, anchors: list[dict], policy) -> dict:
     occ = float(stats.get("occupied", 0) or 0.0)
     metrics["observed_ratio"] = float((free + occ) / max(1.0, total))
 
-    supports = [a for a in anchors if a.get("kind") == "support" and isinstance(a.get("position"), (list, tuple))]
     view_counts: list[int] = []
     if supports and hasattr(world_model, "anchor_view_count"):
         for s in supports:
@@ -124,5 +140,7 @@ def compute_readiness_metrics(world_model, anchors: list[dict], policy) -> dict:
                 view_counts.append(int(world_model.anchor_view_count(pos, bins_deg=45.0)))
             except Exception:
                 view_counts.append(0)
-    metrics["view_diversity"] = int(min(view_counts) if view_counts else 0)
+    top_k = int(getattr(policy, "readiness_view_top_k", 3) or 3)
+    metrics["view_diversity"] = int(_min_top_k(view_counts, k=top_k))
+    metrics["view_diversity_min"] = int(min(view_counts) if view_counts else 0)
     return metrics

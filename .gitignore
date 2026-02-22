@@ -192,3 +192,4 @@ credentials/
 *.key
 *.crt
 .venv/
+sessions
