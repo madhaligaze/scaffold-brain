@@ -103,19 +103,20 @@ async def post_frame(
     if errors:
         raise HTTPException(status_code=400, detail={"status": "INVALID_FRAMEPACKET", "errors": errors})
 
-    # Update monotonic timestamp state (STAGE A)
-    state.last_timestamp[session_id] = float(validated_meta["timestamp"])
-
-    return ingest_frame(
-        state,
-        session_id,
-        meta_payload.frame_id,
-        meta_dict,
-        rgb_bytes,
-        depth_bytes,
-        pointcloud_bytes,
-        validated_meta=validated_meta,
-    )
+    # Update monotonic timestamp state and ingest under the per-session lock so
+    # concurrent frames for one session cannot race the world model.
+    with state.frame_lock(session_id):
+        state.last_timestamp[session_id] = float(validated_meta["timestamp"])
+        return ingest_frame(
+            state,
+            session_id,
+            meta_payload.frame_id,
+            meta_dict,
+            rgb_bytes,
+            depth_bytes,
+            pointcloud_bytes,
+            validated_meta=validated_meta,
+        )
 
 
 @router.post("/session/anchors")

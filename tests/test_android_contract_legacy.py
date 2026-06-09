@@ -13,6 +13,7 @@ def _stream_payload(frame_id: str = "f1") -> dict:
     return {
         "rgb_base64": _b64(b"rgb"),
         "depth_base64": _b64((1000).to_bytes(2, "little") * 4),
+        "depth_scale_m_per_unit": 0.001,
         "intrinsics": {"fx": 100, "fy": 100, "cx": 1, "cy": 1, "width": 2, "height": 2},
         "pose": {"position": [0, 0, 0], "quaternion": [0, 0, 0, 1]},
         "timestamp": 1.0,

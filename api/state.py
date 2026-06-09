@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,6 +42,21 @@ class RuntimeState:
 
     # Telemetry/report rate limiting (in-memory)
     rate_limiter: RateLimiter = field(default_factory=RateLimiter)
+
+    # Per-session frame-ingest serialization. FastAPI dispatches sync endpoints
+    # (the legacy stream path Android uses) on a threadpool, so concurrent
+    # frames for the same session would otherwise race inside
+    # WorldModel.update_from_frame (occupancy / TSDF / pose history).
+    _frame_locks: dict[str, threading.Lock] = field(default_factory=dict)
+    _frame_locks_guard: threading.Lock = field(default_factory=threading.Lock)
+
+    def frame_lock(self, session_id: str) -> threading.Lock:
+        with self._frame_locks_guard:
+            lk = self._frame_locks.get(session_id)
+            if lk is None:
+                lk = threading.Lock()
+                self._frame_locks[session_id] = lk
+            return lk
 
     @classmethod
     def build(cls) -> "RuntimeState":

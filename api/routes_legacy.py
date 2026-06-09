@@ -138,11 +138,31 @@ def _build_meta(session_id: str, payload: LegacyStreamPayload) -> tuple[dict, by
 
     depth_meta = None
     if depth_bytes is not None:
-        depth_scale = payload.depth_scale_m_per_unit or payload.depth_scale or 0.001
+        # Depth scale is metrology-critical: a wrong/missing scale silently
+        # rescales the whole reconstruction (e.g. mm vs m ⇒ 1000x error). Require
+        # a plausible, explicit value rather than silently assuming one.
+        provided = payload.depth_scale_m_per_unit or payload.depth_scale
+        if provided is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "status": "INVALID_DEPTH_SCALE",
+                    "msg": "depth_scale_m_per_unit is required when depth is present",
+                },
+            )
+        depth_scale = float(provided)
+        if not (1e-5 <= depth_scale <= 0.1):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "status": "INVALID_DEPTH_SCALE",
+                    "msg": f"depth_scale_m_per_unit={depth_scale} out of plausible range [1e-5, 0.1]",
+                },
+            )
         depth_meta = {
             "width": int(payload.depth_width or intrinsics["width"]),
             "height": int(payload.depth_height or intrinsics["height"]),
-            "scale_m_per_unit": float(depth_scale),
+            "scale_m_per_unit": depth_scale,
             "encoding": "uint16",
         }
 
@@ -189,15 +209,18 @@ def legacy_stream_with_path(request: Request, session_id: str, payload: LegacySt
 def _legacy_stream_ingest(request: Request, session_id: str, payload: LegacyStreamPayload):
     state = request.app.state.runtime
     meta_dict, rgb_bytes, depth_bytes, pointcloud_bytes = _build_meta(session_id, payload)
-    result = ingest_frame(
-        state,
-        session_id,
-        meta_dict["frame_id"],
-        meta_dict,
-        rgb_bytes,
-        depth_bytes,
-        pointcloud_bytes,
-    )
+    # Serialize per-session frame ingest: this sync handler runs on FastAPI's
+    # threadpool, so concurrent frames for one session must not race the world.
+    with state.frame_lock(session_id):
+        result = ingest_frame(
+            state,
+            session_id,
+            meta_dict["frame_id"],
+            meta_dict,
+            rgb_bytes,
+            depth_bytes,
+            pointcloud_bytes,
+        )
     world = state.get_world(session_id)
     anchors = state.anchors.get(session_id, [])
     extra = getattr(payload, "__pydantic_extra__", None) or {}

@@ -16,6 +16,7 @@ def test_legacy_stream_proxies_to_ingest_and_increments_frames():
     payload = {
         "rgb_base64": _b64(b"rgb"),
         "depth_base64": _b64((1000).to_bytes(2, "little") * 4),
+        "depth_scale_m_per_unit": 0.001,
         "intrinsics": {"fx": 100, "fy": 100, "cx": 1, "cy": 1, "width": 2, "height": 2},
         "pose": {"position": [0, 0, 0], "quaternion": [0, 0, 0, 1]},
         "timestamp": 1.0,
@@ -41,6 +42,39 @@ def test_legacy_stream_returns_409_when_geometry_missing():
     detail = res.json()["detail"]
     assert detail["status"] == "NEEDS_GEOMETRY"
     assert "missing" in detail
+
+
+def _depth_payload(**overrides) -> dict:
+    payload = {
+        "rgb_base64": _b64(b"rgb"),
+        "depth_base64": _b64((1000).to_bytes(2, "little") * 4),
+        "depth_scale_m_per_unit": 0.001,
+        "intrinsics": {"fx": 100, "fy": 100, "cx": 1, "cy": 1, "width": 2, "height": 2},
+        "pose": {"position": [0, 0, 0], "quaternion": [0, 0, 0, 1]},
+        "timestamp": 1.0,
+        "frame_id": "df1",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_legacy_stream_rejects_missing_depth_scale():
+    """Depth without an explicit scale must be rejected, not silently assumed."""
+    client = TestClient(app)
+    session_id = client.post("/session/start").json()["session_id"]
+    payload = _depth_payload()
+    payload.pop("depth_scale_m_per_unit")
+    res = client.post(f"/session/stream/{session_id}", json=payload)
+    assert res.status_code == 422
+    assert res.json()["detail"]["status"] == "INVALID_DEPTH_SCALE"
+
+
+def test_legacy_stream_rejects_implausible_depth_scale():
+    client = TestClient(app)
+    session_id = client.post("/session/start").json()["session_id"]
+    res = client.post(f"/session/stream/{session_id}", json=_depth_payload(depth_scale_m_per_unit=5.0))
+    assert res.status_code == 422
+    assert res.json()["detail"]["status"] == "INVALID_DEPTH_SCALE"
 
 
 def test_legacy_unlock_and_snapshot_restore_flow():
