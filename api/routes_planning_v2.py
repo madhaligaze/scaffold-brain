@@ -105,16 +105,30 @@ def _run_scaffold_pipeline(state, session_id: str, *, strict: bool | None = None
     valid, violations = validate_all(elements, world, state.policy, trace=trace)
     add_trace_event(trace, "plan_validated_final", {"valid": bool(valid), "violations": violations})
 
+    # FEM structural limit-state check (strength / buckling / uplift / stability).
+    from scaffold.structural.checks import structural_check
+    try:
+        structural_ok, structural_violations, structural_report = structural_check(
+            elements, world, state.policy, trace=trace
+        )
+    except Exception as exc:
+        structural_ok = False
+        structural_violations = [{"type": "STRUCTURAL_ANALYSIS_ERROR", "msg": str(exc)}]
+        structural_report = {"stable": False, "safety_score": 0, "passes_uls": False, "error": str(exc)}
+    violations = list(violations) + list(structural_violations)
+    add_trace_event(trace, "plan_structural", {"ok": bool(structural_ok), "report": structural_report})
+
     if strict is None:
         strict = bool(getattr(state.policy, "enforce_validators_strict", True))
 
-    if not valid and bool(strict):
+    if (not valid or not structural_ok) and bool(strict):
         raise HTTPException(
             status_code=409,
             detail={
                 "status": "VALIDATION_FAILED",
                 "best_candidate": {"id": best.candidate_id, "score": best.score, "violations": best.violations},
                 "violations": violations,
+                "structural": structural_report,
             },
         )
 
@@ -156,6 +170,7 @@ def _run_scaffold_pipeline(state, session_id: str, *, strict: bool | None = None
     scene_bundle = {
         "session_id": session_id,
         "rev_id": rev_id,
+        "structural": structural_report,
         # Legacy compat for older clients/tests that still expect env_mesh.path.
         "env_mesh": {"path": f"{base_world}/env_mesh.glb"},
         "env": {

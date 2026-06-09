@@ -387,6 +387,18 @@ def legacy_model(request: Request, session_id: str):
         if not valid:
             violations.append("SCHEMA_OR_COLLISION_INVALID")
 
+        # FEM structural limit-state check (strength / buckling / uplift / stability).
+        from scaffold.structural.checks import structural_check
+        try:
+            structural_ok, structural_violations, structural_report = structural_check(
+                elements, world, state.policy
+            )
+        except Exception as exc:
+            structural_ok = False
+            structural_violations = [{"type": "STRUCTURAL_ANALYSIS_ERROR", "msg": str(exc)}]
+            structural_report = {"stable": False, "safety_score": 0, "passes_uls": False, "error": str(exc)}
+        violations.extend(structural_violations)
+
         overlays = world.compute_overlays(state.policy.__dict__)
         overlays["violations"] = violations
 
@@ -435,9 +447,13 @@ def legacy_model(request: Request, session_id: str):
         except Exception as e:
             print(f"[warn] scaffold.glb generation failed: {e}")
 
-        score_norm = float(score) if isinstance(score, (int, float)) else 0.0
-        score_norm = score_norm / 100.0 if score_norm > 1.0 else score_norm
-        safety_score = max(0, min(100, int(score_norm * 100) - 10 * len(violations)))
+        # Safety score now comes from the FEM analysis (real mechanics), not a
+        # readiness-derived heuristic. Falls back to 0 if the model was unstable.
+        safety_score = int(structural_report.get("safety_score", 0))
+        total_weight_kg = float(
+            bundle.get("bom", {}).get("totals", {}).get("total_weight_kg", 0.0)
+        )
+        bundle["structural"] = structural_report
         unique_nodes = {tuple(e["start"]) for e in android_elements} | {tuple(e["end"]) for e in android_elements}
         return {
             "status": "OK",
@@ -447,15 +463,16 @@ def legacy_model(request: Request, session_id: str):
                     "material_info": "layher",
                     "safety_score": safety_score,
                     "ai_critique": [str(v) for v in violations],
+                    "structural": structural_report,
                     "elements": android_elements,
                     "full_structure": android_elements,
                     "stats": {
                         "total_nodes": len(unique_nodes),
                         "total_beams": len(android_elements),
-                        "total_weight_kg": 0,
+                        "total_weight_kg": total_weight_kg,
                         "collisions_fixed": len(violations),
                     },
-                    "physics": {"status": "OK"},
+                    "physics": {"status": "OK" if structural_ok else "FAIL"},
                 }
             ],
             "bundle": bundle,

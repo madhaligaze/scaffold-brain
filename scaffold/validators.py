@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Iterable
 import uuid
 
@@ -47,6 +48,21 @@ def _iter_segments(elements: list[dict[str, Any]]) -> Iterable[tuple[str, np.nda
             yield t, p, p, e
 
 
+# Maximum sample density for the line-sweep collision check. Sampling at this
+# spacing (≈ half a typical voxel) means a long member can no longer "tunnel"
+# through a narrow obstacle that sits between its endpoints.
+_SWEEP_SPACING_M = 0.1
+_SWEEP_MAX_SAMPLES = 65
+
+
+def _sample_segment(a: np.ndarray, b: np.ndarray, spacing: float, max_pts: int) -> list[np.ndarray]:
+    L = float(np.linalg.norm(b - a))
+    if L <= 1e-9:
+        return [a]
+    n = int(min(max_pts, max(2, math.ceil(L / max(spacing, 1e-3)) + 1)))
+    return [a + (b - a) * (i / (n - 1)) for i in range(n)]
+
+
 def collision_check(
     elements: list[dict[str, Any]],
     world_model,
@@ -62,19 +78,14 @@ def collision_check(
     sample_pts: list[list[float]] = []
     meta: list[dict[str, Any]] = []
 
+    # Line-sweep: densely sample each member so obstacles between the endpoints
+    # are detected (the previous 3-point sampling missed interior clipping).
     for t, a, b, e in _iter_segments(elements):
-        pa = a.tolist()
-        pb = b.tolist()
-        pm = ((a + b) * 0.5).tolist()
-        sample_pts.extend([pa, pm, pb])
         ref = e.get("id") or e.get("name")
-        meta.extend(
-            [
-                {"elem_type": t, "ref": ref, "where": "a"},
-                {"elem_type": t, "ref": ref, "where": "m"},
-                {"elem_type": t, "ref": ref, "where": "b"},
-            ]
-        )
+        pts = _sample_segment(a, b, _SWEEP_SPACING_M, _SWEEP_MAX_SAMPLES)
+        for j, p in enumerate(pts):
+            sample_pts.append(p.tolist())
+            meta.append({"elem_type": t, "ref": ref, "where": f"s{j}/{len(pts)-1}"})
 
     if not sample_pts:
         return False, [{"type": "NO_POINTS", "msg": "No positions to validate"}]
@@ -212,3 +223,31 @@ def validate_all(
     all_violations.extend(v4)
 
     return (ok1 and ok2 and ok3 and ok4 and len(all_violations) == 0), all_violations
+
+
+def structural_validate(
+    elements: list[dict[str, Any]],
+    world_model,
+    policy,
+    *,
+    trace: list[dict[str, Any]] | None = None,
+) -> tuple[bool, list[dict[str, Any]], dict[str, Any]]:
+    """Full validation including the FEM structural check.
+
+    Returns ``(ok, violations, structural_report)``. ``ok`` is True only when
+    both the geometric/rule checks (:func:`validate_all`) and the structural
+    limit-state checks pass. This is the gate used on the *final* scaffold
+    result (planning / lock), where the cost of the FEM solve is acceptable —
+    candidate search continues to use the cheaper :func:`validate_all`.
+    """
+    from scaffold.structural.checks import structural_check  # lazy: pulls in PyNiteFEA
+
+    geo_ok, geo_viol = validate_all(elements, world_model, policy, trace=trace)
+    try:
+        struct_ok, struct_viol, report = structural_check(elements, world_model, policy, trace=trace)
+    except Exception as exc:  # never let the analysis crash the request
+        struct_ok = False
+        struct_viol = [{"type": "STRUCTURAL_ANALYSIS_ERROR", "msg": f"{type(exc).__name__}: {exc}"}]
+        report = {"stable": False, "safety_score": 0, "passes_uls": False, "error": str(exc)}
+
+    return (geo_ok and struct_ok), (geo_viol + struct_viol), report
