@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import math
 from types import SimpleNamespace
 
-import pytest
 
 from scaffold.solver import generate_scaffold
 from scaffold.structural.checks import structural_check

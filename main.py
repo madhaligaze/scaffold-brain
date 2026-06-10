@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -122,15 +123,17 @@ def create_app() -> FastAPI:
                     },
                 )
         except Exception:
-            pass
+            logging.getLogger("audit").debug("audit write failed", exc_info=True)
 
         return await call_next(request)
 
-    app.include_router(session_router)
-    app.include_router(planning_router)
-    app.include_router(export_router)
-    app.include_router(legacy_router)
-    app.include_router(log_router)
+    # Contract: `/v1/...` is the canonical namespace. The bare paths are kept as
+    # deprecated back-compat aliases (older clients + the Android legacy shim) and
+    # should be retired once all clients move to /v1.
+    _routers = [session_router, planning_router, export_router, legacy_router, log_router]
+    for _r in _routers:
+        app.include_router(_r)               # deprecated bare-path aliases
+        app.include_router(_r, prefix="/v1")  # canonical
 
     sessions_dir = Path(app.state.runtime.config.storage.sessions_root)
     sessions_dir.mkdir(parents=True, exist_ok=True)

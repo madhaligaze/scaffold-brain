@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException, Request
+
+log = logging.getLogger("security.auth")
+_dev_mode_warned = False
 
 
 @dataclass(frozen=True)
@@ -51,13 +55,19 @@ def require_api_key(request: Request) -> str:
     cfg = getattr(state, "config", None)
     keys = _load_keys(cfg)
 
-    # Dev mode (no configured keys)
+    # Dev mode (no configured keys). Configure security.api_keys to enforce auth.
     if not keys:
+        global _dev_mode_warned
+        if not _dev_mode_warned:
+            log.warning("AUTH DISABLED: no security.api_keys configured — all requests allowed (dev mode).")
+            _dev_mode_warned = True
         request.state.role = "dev"
         request.state.api_key_id = "dev"
         return "dev"
 
-    key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    # Header only: never accept the key from the query string (it leaks into
+    # access logs, referrers and audit trails).
+    key = request.headers.get("X-API-Key")
     if not key:
         raise HTTPException(
             status_code=401, detail={"status": "UNAUTHORIZED", "reason": "missing_api_key"}

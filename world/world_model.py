@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 import time
-import math
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 from tracking.pose_quality import evaluate_pose_step
 from tracking.icp_refinement import run_icp_point_to_plane
@@ -334,7 +336,9 @@ class WorldModel:
                         self.metrics["pc_occupancy_touched"] = int(stats.get("touched", 0))
                         self.metrics["pc_used_points"] = int(stats.get("used_points", 0))
                     except Exception:
-                        pass
+                        # Geometry loss must not be silent — it degrades the scaffold solve.
+                        log.warning("pointcloud→occupancy integration failed", exc_info=True)
+                        self.metrics["pc_occupancy_error"] = True
 
                 # ICP consistency is only meaningful for sufficiently dense clouds.
                 if self._last_cloud_pts is not None and pts.shape[0] >= 50 and self._last_cloud_pts.shape[0] >= 50:

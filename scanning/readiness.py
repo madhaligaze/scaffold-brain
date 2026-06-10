@@ -73,7 +73,6 @@ def compute_readiness(world_model, anchors: list[dict], policy) -> tuple[bool, f
                 view_counts.append(0)
     top_k = int(getattr(policy, "readiness_view_top_k", 3) or 3)
     view_div = _min_top_k(view_counts, k=top_k)
-    view_div_min = int(min(view_counts) if view_counts else 0)
     if supports and view_div < min_views:
         reasons.append(f"LOW_VIEW_DIVERSITY:{view_div}<{min_views}")
 

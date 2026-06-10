@@ -1,7 +1,7 @@
 from policy.policy_config import PolicyConfig
 from scaffold.repair import repair_elements
 from scaffold.search import search_scaffolds
-from world.occupancy import FREE, OCCUPIED, UNKNOWN
+from world.occupancy import FREE, OCCUPIED
 
 
 class _Occ:
