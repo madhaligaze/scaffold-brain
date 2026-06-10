@@ -6,6 +6,7 @@ import numpy as np
 
 from scaffold.spec import DEFAULT_SPEC
 from scaffold.trace import trace_candidate_grid, trace_element_added, trace_solver_start
+from world.occupancy import OCCUPIED
 
 
 def _work_bounds(anchors: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray] | None:
@@ -25,6 +26,43 @@ def _snap_to_catalog(length_m: float, catalog: tuple[float, ...]) -> float:
     return float(arr[j])
 
 
+def _occupancy_blocked_mask(
+    world_model,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    z0: float,
+    z1: float,
+    *,
+    step: float = 0.4,
+) -> np.ndarray:
+    """(nx, ny) boolean mask — True where the vertical post column at (x, y)
+    over z0..z1 passes through a KNOWN-OCCUPIED voxel.
+
+    Only real obstacles block: a sparse scan is mostly UNKNOWN, so gating on
+    unknown space would prune almost everything. This lets the layout step away
+    from scanned geometry at *generation* time, not just in repair.
+    """
+    nx, ny = int(xs.size), int(ys.size)
+    blocked = np.zeros((nx, ny), dtype=bool)
+    occ = getattr(world_model, "occupancy", None)
+    query = getattr(occ, "query", None)
+    if occ is None or not callable(query):
+        return blocked
+    zs = np.arange(float(z0), float(z1) + 1e-6, float(step), dtype=np.float32)
+    if zs.size == 0:
+        return blocked
+    pts: list[list[float]] = []
+    for ix in range(nx):
+        for iy in range(ny):
+            for z in zs:
+                pts.append([float(xs[ix]), float(ys[iy]), float(z)])
+    try:
+        states = np.asarray(query(pts), dtype=np.int32).reshape(nx, ny, zs.size)
+    except Exception:
+        return blocked
+    return np.any(states == OCCUPIED, axis=2)
+
+
 def generate_scaffold(
     world_model,
     anchors: list[dict],
@@ -32,7 +70,6 @@ def generate_scaffold(
     *,
     trace: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict], dict[str, Any]]:
-    del world_model
     event_trace = trace if trace is not None else []
     trace_solver_start(
         event_trace,
@@ -71,10 +108,15 @@ def generate_scaffold(
 
     trace_candidate_grid(event_trace, {"nx": int(xs.size), "ny": int(ys.size), "step_m": float(step), "top_z_m": float(top_z)})
 
+    # World-aware: drop grid columns that pass through scanned obstacles.
+    blocked = _occupancy_blocked_mask(world_model, xs, ys, float(lo[2]) + 0.2, float(height))
+
     elements: list[dict] = []
 
-    for x in xs:
-        for y in ys:
+    for ix, x in enumerate(xs):
+        for iy, y in enumerate(ys):
+            if blocked[ix, iy]:
+                continue
             p = [float(x), float(y), float(lo[2])]
             e = {
                 "type": "post",
@@ -108,10 +150,13 @@ def generate_scaffold(
     base_z = float(lo[2] + 0.3)
     for ix in range(nx):
         for iy in range(ny):
-            if ix + 1 < nx:
+            if blocked[ix, iy]:
+                continue
+            # Only connect to a neighbour that also has a post (not pruned).
+            if ix + 1 < nx and not blocked[ix + 1, iy]:
                 add_ledger(P(ix, iy), P(ix + 1, iy), base_z, "ledger_base_x")
                 add_ledger(P(ix, iy), P(ix + 1, iy), top_z, "ledger_top_x")
-            if iy + 1 < ny:
+            if iy + 1 < ny and not blocked[ix, iy + 1]:
                 add_ledger(P(ix, iy), P(ix, iy + 1), base_z, "ledger_base_y")
                 add_ledger(P(ix, iy), P(ix, iy + 1), top_z, "ledger_top_y")
 
@@ -128,8 +173,10 @@ def generate_scaffold(
             trace_element_added(event_trace, e, reason)
 
     if bool(getattr(policy, "stability_require_diagonals", True)) and nx >= 2 and ny >= 2:
-        add_brace(P(0, 0), P(nx - 1, 0), base_z, top_z, "brace_face_ymin")
-        add_brace(P(0, ny - 1), P(nx - 1, ny - 1), base_z, top_z, "brace_face_ymax")
+        if not blocked[0, 0] and not blocked[nx - 1, 0]:
+            add_brace(P(0, 0), P(nx - 1, 0), base_z, top_z, "brace_face_ymin")
+        if not blocked[0, ny - 1] and not blocked[nx - 1, ny - 1]:
+            add_brace(P(0, ny - 1), P(nx - 1, ny - 1), base_z, top_z, "brace_face_ymax")
 
     deck = {
         "type": "deck",
@@ -156,5 +203,7 @@ def generate_scaffold(
         "elements": int(len(elements)),
         "step_m": float(step),
         "top_z_m": float(top_z),
+        "world_aware": bool(getattr(world_model, "occupancy", None) is not None),
+        "posts_blocked": int(np.count_nonzero(blocked)),
     }
     return elements, solver_meta
